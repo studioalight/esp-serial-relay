@@ -132,7 +132,7 @@ PAGE = """<!doctype html>
  #mon .tx{color:#c8896a} #mon .rx{color:#7ea87e} #mon .bin{color:#717171;font-style:italic}
  #mon .ann{color:#e8d9a0;font-style:italic}
  .ann-input{font-family:var(--font-mono);font-size:.62rem;background:#161616;color:var(--color-text);
-        border:1px solid var(--color-line);border-radius:4px;padding:.22rem .45rem;width:10rem}
+        border:1px solid var(--color-line);border-radius:4px;padding:.22rem .45rem;width:14rem;flex:1 1 14rem}
  .ann-input:focus{outline:none;border-color:var(--color-accent)}
  .ann-input::placeholder{color:#666}
  #mon .err{color:var(--color-bad)}
@@ -233,7 +233,7 @@ PAGE = """<!doctype html>
   <button class="mini" id="font-plus">A+</button>
   <button class="mini" id="mon-clear">clear</button>
   <button class="mini" id="mon-save">save log</button>
-  <input class="ann-input" id="ann-text" type="text" placeholder="annotation\u2026" maxlength="120">
+  <input class="ann-input" id="ann-text" type="text" placeholder="mark an event — e.g. 'start test' (lands in relay log with timestamp)" maxlength="120">
   <button class="mini" id="mon-annotate">mark</button>
   <label><input type="checkbox" id="show-stamps"> timestamps</label>
   <span id="bytes">0 B</span>
