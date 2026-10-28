@@ -83,6 +83,7 @@ LOOP = None  # main asyncio loop, captured at startup (thread-safe handoffs)
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="color-scheme" content="dark light">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Studio Alight — Serial Relay</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -91,11 +92,20 @@ PAGE = """<!doctype html>
 <style>
  :root{ --color-bg:#0a0a0a; --color-text:#f5f5f5; --color-accent:#ff0000;
           --font-display:'Space Grotesk',sans-serif; --font-mono:'Space Mono',monospace;
-          --color-mute:#999; --color-line:#2a2a2a; --color-ok:#58c158; --color-bad:#e05a5a }
+          --color-mute:#999; --color-line:#2a2a2a; --color-ok:#58c158; --color-bad:#e05a5a;
+          --color-panel:#161616; --color-inset:#050505; --color-inset-text:#b9c2b9;
+          --color-faint:#666; --color-line-soft:#3a3a3a }
+ /* FIELD 2026-10-28 rung 20: system-follow + manual light/dark toggle. Dark is
+  * the authored default; the light palette activates on [data-theme="light"] —
+  * set manually by the toggle or by a system-follow bootstrap (no stored pref). */
+ :root[data-theme="light"]{ --color-bg:#f7f4ee; --color-text:#17181a; --color-accent:#c1121f;
+          --color-mute:#5c5f63; --color-line:#c9c9c9; --color-ok:#20713f; --color-bad:#b03232;
+          --color-panel:#ffffff; --color-inset:#fbfaf7; --color-inset-text:#2c2e30;
+          --color-faint:#8a8d90; --color-line-soft:#c9c9c9 }
  *{box-sizing:border-box}
  body{font-family:var(--font-display);background:var(--color-bg);color:var(--color-text);
         line-height:1.6;max-width:760px;margin:0 auto;padding:3rem 1rem 4rem;min-height:100vh}
- .brand{display:flex;align-items:baseline;gap:.8rem;flex-wrap:wrap}
+ .brand{display:flex;align-items:center;gap:.7rem;display:flex;align-items:baseline;gap:.8rem;flex-wrap:wrap}
  .mark{width:.62rem;height:.62rem;border-radius:50%;background:var(--color-accent);
         box-shadow:0 0 10px 2px rgba(255,0,0,.45);align-self:center}
  h1{font-size:1.35rem;font-weight:500;letter-spacing:.02em;margin:0}
@@ -125,23 +135,23 @@ PAGE = """<!doctype html>
  .phase.active .dot{background:var(--color-accent);box-shadow:0 0 8px rgba(255,0,0,.6)}
  .phase.done{color:var(--color-text)} .phase.done .dot{background:var(--color-ok)}
  /* serial monitor */
- #mon{font-family:var(--font-mono);font-size:.72rem;line-height:1.55;background:#050505;
+ #mon{font-family:var(--font-mono);font-size:.72rem;line-height:1.55;background:var(--color-inset);
         border:1px solid var(--color-line);border-radius:8px;padding:.8rem;height:15rem;min-height:5rem;
         max-height:70vh;overflow-y:auto;resize:vertical;
-        white-space:pre-wrap;word-break:break-all;color:#b9c2b9}
+        white-space:pre-wrap;word-break:break-all;color:var(--color-inset-text)}
  #mon .tx{color:#c8896a} #mon .rx{color:#7ea87e} #mon .bin{color:#717171;font-style:italic}
  #mon .ann{color:#e8d9a0;font-style:italic}
- .ann-input{font-family:var(--font-mono);font-size:.62rem;background:#161616;color:var(--color-text);
+ .ann-input{font-family:var(--font-mono);font-size:.62rem;background:var(--color-panel);color:var(--color-text);
         border:1px solid var(--color-line);border-radius:4px;padding:.22rem .45rem;width:14rem;flex:1 1 14rem}
  .ann-input:focus{outline:none;border-color:var(--color-accent)}
- .ann-input::placeholder{color:#666}
+ .ann-input::placeholder{color:var(--color-faint)}
  #mon .err{color:var(--color-bad)}
  .mon-ctl{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.5rem 0 .3rem;row-gap:.35rem}
  .mon-ctl label,.mon-foot label{font-family:var(--font-mono);font-size:.68rem;color:var(--color-mute);letter-spacing:.08em;
         display:flex;align-items:center;gap:.3rem;cursor:pointer;flex-shrink:0;white-space:nowrap}
  .mon-foot{display:flex;gap:.7rem;align-items:center;margin:.25rem 0 0;
         font-family:var(--font-mono);font-size:.62rem;color:var(--color-mute)}
- .mon-foot-legend{color:#666;letter-spacing:.03em}
+ .mon-foot-legend{color:var(--color-faint);letter-spacing:.03em}
  #mon-clear,#mon-save,.mini{font-family:var(--font-mono);font-size:.62rem;padding:.2rem .5rem;border-radius:4px;
         border:1px solid var(--color-line);background:transparent;color:var(--color-mute);cursor:pointer}
  #mon-clear:hover,#mon-save:hover,.mini:hover{color:var(--color-text)}
@@ -156,7 +166,7 @@ PAGE = """<!doctype html>
  .box-label{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.14em;
         text-transform:uppercase;color:var(--color-mute);margin-bottom:.7rem}
  button{font-family:var(--font-mono);font-size:.9rem;padding:.65rem 1.4rem;border-radius:6px;
-        border:1px solid #3a3a3a;background:#161616;color:var(--color-text);cursor:pointer;
+        border:1px solid var(--color-line-soft);background:var(--color-panel);color:var(--color-text);cursor:pointer;
         transition:border-color .2s, box-shadow .2s}
  button:hover{border-color:var(--color-accent);box-shadow:0 0 12px rgba(255,0,0,.25)}
  button:disabled{opacity:.4;cursor:default;box-shadow:none}
@@ -164,11 +174,15 @@ PAGE = """<!doctype html>
  #state.up{color:var(--color-ok)} #state.down{color:var(--color-bad)}
  .hint{color:var(--color-mute);font-size:.85rem}
  .hint em{color:var(--color-text);font-style:normal}
- #log{font-family:var(--font-mono);font-size:.75rem;white-space:pre-wrap;color:#8fbf8f;
+ #log{font-family:var(--font-mono);font-size:.75rem;white-space:pre-wrap;color:var(--color-ok);
         max-height:14rem;overflow-y:auto}
  #log .bad{color:var(--color-bad)} #log .ok{color:var(--color-ok)}
  footer{margin-top:2rem;color:var(--color-mute);font-size:.8rem;letter-spacing:.05em}
  footer b{color:var(--color-text);font-weight:500}
+ .theme-toggle{margin-left:auto;font-family:var(--font-mono);font-size:.62rem;
+        padding:.25rem .6rem;border-radius:4px;border:1px solid var(--color-line);
+        background:transparent;color:var(--color-mute);cursor:pointer;flex-shrink:0}
+ .theme-toggle:hover{color:var(--color-text);border-color:var(--color-line-soft)}
 </style></head><body>
 <div class="brand">
  <span class="mark"></span>
@@ -180,6 +194,7 @@ PAGE = """<!doctype html>
     </span>
  </span>
  <span class="tagline">We Alight the Invisible</span>
+ <button class="theme-toggle" id="theme-toggle" title="toggle light/dark (follows system by default)">◐ system</button>
 </div>
 <hr class="rule">
 <div class="mode-row">
@@ -199,7 +214,7 @@ PAGE = """<!doctype html>
  <div class="mon-ctl">
   <button id="btn-adv">Connect USB serial (advanced)</button>
   <label style="margin-left:.4rem">baud
-   <select id="baud" style="font-family:var(--font-mono);background:#161616;color:var(--color-text);border:1px solid #3a3a3a;border-radius:4px;padding:.2rem .4rem">
+   <select id="baud" style="font-family:var(--font-mono);background:var(--color-panel);color:var(--color-text);border:1px solid var(--color-line-soft);border-radius:4px;padding:.2rem .4rem">
     <option>115200</option><option>230400</option><option>460800</option>
     <option>921600</option><option>1500000</option><option>2000000</option>
    </select>
@@ -521,7 +536,33 @@ function setMode(mode){
 $('mode-easy').onclick=()=>setMode('easy');
 $('mode-adv').onclick=()=>setMode('adv');
 try{ setMode(localStorage.getItem('relay-mode') || 'easy'); }catch(e){ setMode('easy'); }
-</script></body></html>"""
+</script><script>
+/* rung 20: light/dark — stored choice wins; otherwise follow system, live. */
+(function(){
+  var mq = window.matchMedia('(prefers-color-scheme: light)');
+  var btn = document.getElementById('theme-toggle');
+  var current = 'dark';
+  function apply(mode, label){
+    if(mode === 'light') document.documentElement.setAttribute('data-theme','light');
+    else document.documentElement.removeAttribute('data-theme');
+    current = mode;
+    if(btn) btn.textContent = mode === 'light' ? '☀ light' : '◐ system';
+    void label;
+  }
+  var stored = null;
+  try { stored = localStorage.getItem('relay-theme'); } catch(e){}
+  if(stored === 'light' || stored === 'dark'){ apply(stored); }
+  else { apply(mq.matches ? 'light' : 'dark');
+         try{ mq.addEventListener('change', function(e){ apply(e.matches ? 'light':'dark'); }); }catch(e){}
+       }
+  if(btn) btn.onclick = function(){
+    var next = current === 'light' ? 'dark' : 'light';
+    try { localStorage.setItem('relay-theme', next); } catch(e){}
+    apply(next);
+  };
+})();
+</script>
+</body></html>"""
 
 
 def render_serial(b):
@@ -551,7 +592,13 @@ DASH_PAGE = """<!doctype html>
 <style>
  :root{ --color-bg:#0a0a0a; --color-text:#f5f5f5; --color-accent:#ff0000;
         --font-display:'Space Grotesk',sans-serif; --font-mono:'Space Mono',monospace;
-        --color-mute:#999; --color-line:#2a2a2a; --color-ok:#58c158; --color-bad:#e05a5a }
+        --color-mute:#999; --color-line:#2a2a2a; --color-ok:#58c158; --color-bad:#e05a5a ,
+          --color-panel:#161616; --color-inset:#050505; --color-inset-text:#b9c2b9;
+          --color-faint:#666; --color-line-soft:#3a3a3a }
+ :root[data-theme="light"]{ --color-bg:#f7f4ee; --color-text:#17181a; --color-accent:#c1121f;
+          --color-mute:#5c5f63; --color-line:#c9c9c9; --color-ok:#20713f; --color-bad:#b03232;
+          --color-panel:#ffffff; --color-inset:#fbfaf7; --color-inset-text:#2c2e30;
+          --color-faint:#8a8d90; --color-line-soft:#c9c9c9 }
  *{box-sizing:border-box}
  body{font-family:var(--font-display);background:var(--color-bg);color:var(--color-text);
       line-height:1.55;max-width:820px;margin:0 auto;padding:3rem 1rem 4rem;min-height:100vh}
@@ -584,12 +631,12 @@ DASH_PAGE = """<!doctype html>
  .phase.active{border-color:var(--color-accent);color:var(--color-text);box-shadow:0 0 10px rgba(255,0,0,.2)}
  .phase.active .dot{background:var(--color-accent);box-shadow:0 0 8px rgba(255,0,0,.6)}
  .phase.done{color:var(--color-text)} .phase.done .dot{background:var(--color-ok)}
- #mon{font-family:var(--font-mono);font-size:.66rem;line-height:1.5;background:#050505;
+ #mon{font-family:var(--font-mono);font-size:.66rem;line-height:1.5;background:var(--color-inset);
        border:1px solid var(--color-line);border-radius:8px;padding:.8rem;height:18rem;
-       overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#b9c2b9}
+       overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--color-inset-text)}
  #mon .rx{color:#7ea87e} #mon .tx{color:#c8896a}
  #dlog{font-family:var(--font-mono);font-size:.64rem;line-height:1.45;white-space:pre-wrap;
-       color:#8fbf8f;max-height:12rem;overflow-y:auto;background:#050505;
+       color:var(--color-ok);max-height:12rem;overflow-y:auto;background:var(--color-inset);
        border:1px solid var(--color-line);border-radius:8px;padding:.7rem}
  #dlog .bad{color:var(--color-bad)} #dlog .warn{color:#d8b966}
  .hint{color:var(--color-mute);font-size:.85rem}
@@ -603,8 +650,13 @@ DASH_PAGE = """<!doctype html>
  footer{margin-top:2rem;color:var(--color-mute);font-size:.8rem;letter-spacing:.05em}
  footer b{color:var(--color-text);font-weight:500}
  footer a{color:var(--color-mute)} footer a:hover{color:var(--color-text)}
+ .theme-toggle{font-family:var(--font-mono);font-size:.62rem;
+        padding:.25rem .6rem;border-radius:4px;border:1px solid var(--color-line);
+        background:transparent;color:var(--color-mute);cursor:pointer}
+ .theme-toggle:hover{color:var(--color-text);border-color:var(--color-line-soft)}
 </style></head><body>
 <div class="brand">
+ <button class="theme-toggle" id="theme-toggle" title="toggle light/dark (follows system by default)">◐ system</button>
  <span class="mark"></span>
  <span class="wordmark">
    <span class="hot">S</span><span class="dim">TUDIO</span><span style="width:.4em;display:inline-block"></span><span class="hot">A</span><span class="dim">LIGHT</span>
@@ -715,7 +767,30 @@ async function poll(){
   }catch(e){}
 }
 poll(); setInterval(poll,2000); openMon();
-</script></body></html>"""
+</script><script>
+(function(){
+  var mq = window.matchMedia('(prefers-color-scheme: light)');
+  var btn = document.getElementById('theme-toggle');
+  var current = 'dark';
+  function apply(mode){
+    if(mode === 'light') document.documentElement.setAttribute('data-theme','light');
+    else document.documentElement.removeAttribute('data-theme');
+    current = mode;
+    if(btn) btn.textContent = mode === 'light' ? '☀ light' : '◐ system';
+  }
+  var stored = null;
+  try { stored = localStorage.getItem('relay-theme'); } catch(e){}
+  if(stored === 'light' || stored === 'dark'){ apply(stored); }
+  else { apply(mq.matches ? 'light' : 'dark');
+         try{ mq.addEventListener('change', function(e){ apply(e.matches ? 'light':'dark'); }); }catch(e){} }
+  if(btn) btn.onclick = function(){
+    var next = current === 'light' ? 'dark' : 'light';
+    try { localStorage.setItem('relay-theme', next); } catch(e){}
+    apply(next);
+  };
+})();
+</script>
+</body></html>"""
 
 
 class WebSerialBridge:
