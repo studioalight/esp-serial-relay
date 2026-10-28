@@ -74,7 +74,7 @@ is reachable tailnet-wide (`https://<host>.tail<net>.ts.net:8444/`).
 
 ## What is RFC2217? (the protocol this runs on)
 
-[RFC 2217](https://www.rfc-editor.org/rfc/rfc2217.html) — *Telnet Com Port Control
+[RFC 2217](https://www.rfc-editor.org/info/rfc2217) — *Telnet Com Port Control
 Option* (IETF, October 1997) — is the standard that makes a remote serial port behave
 like a local one: a server listens on TCP, and a small option channel inside the
 session carries the serial-line control traffic (baud rate, data bits, parity, stop
