@@ -1,0 +1,26 @@
+{
+  "id": "esp-serial-relay",
+  "name": "ESP Serial Relay",
+  "description": "Install, inspect, and remove the ESP serial relay bridge (browser WebSerial → RFC2217 :4001 for esptool, dashboard :4002, tailscale serve :8444).",
+  "version": "0.1.0",
+  "categories": [
+    "developer-tools"
+  ],
+  "activation": {
+    "onStartup": true
+  },
+  "skills": [
+    "skills/esp-serial-relay-install"
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "contracts": {
+    "tools": [
+      "esp_relay_status",
+      "esp_relay_install"
+    ]
+  }
+}
