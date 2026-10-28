@@ -8,14 +8,33 @@ primary use case, not a requirement.
 This tool wasn't designed on paper — it was beaten into shape by failures, each one
 leaving a rule behind. The honest arc:
 
-**1. The bridge-Mac era (2026-10-12–15).** The first flashes ran over a WAN hop to a
-pyserial RFC2217 server on a remote Mac — and died to a latency wall nobody had named:
-every DTR/RTS control command is a network roundtrip, and esptool's reset timing breaks
-mid-flash on anything but a LAN. The measured pacing table (connection setup costs as
-much as a 1.2 MB flash — batch everything into one write) is still in the flash skill.
-The relay itself started as Fredrik's redesign on 2026-10-15: *the gateway owns both
-endpoints* — the RFC2217 listener AND the WebSocket the browser pipes serial through —
-"the daemon never holds a half-open USB lease on a remote box."
+**0. The bridge is born (2026-03).** The lineage starts months earlier than the
+tool itself, in three sibling repos that still exist:
+
+- [`studioalight/esp32-bridge`](https://github.com/studioalight/esp32-bridge) — v2.0
+  established the core moves this relay still uses: serial monitor + flashing over
+  WebSocket, USB hotplug detection, **smart reconnection tracking devices by
+  hardware ID**, chip-ID auto-detection, batch flash in one esptool invocation,
+  and tailscale auto-discovery for remote reach.
+- [`studioalight/esp-idf-project-builder`](https://github.com/studioalight/esp-idf-project-builder)
+  — the config-free workflow: flash addresses read from ESP-IDF build artifacts,
+  target verification before flashing, multi-target (S2/S3/C3/C6/P4). The October
+  rule "offsets from `build/flash_args`, never memory" was this repo's principle,
+  rediscovered.
+- [`studioalight/esp32-p4-skill`](https://github.com/studioalight/esp32-p4-skill) —
+  the topology this whole family shares: **container/agent → tailscale →
+  bridge-on-Mac → USB → board**. The agent was always on the far side of the wire;
+  only the middle has been rewritten.
+
+**1. The bridge-Mac era (2026-10-12–15).** The October generation ran flashes over a
+WAN hop to a pyserial RFC2217 server on a remote Mac — and died to a latency wall
+nobody had named: every DTR/RTS control command is a network roundtrip, and esptool's
+reset timing breaks mid-flash on anything but a LAN. The measured pacing table
+(connection setup costs as much as a 1.2 MB flash — batch everything into one write)
+is still in the flash skill. The relay itself started as Fredrik's redesign on
+2026-10-15: *the gateway owns both endpoints* — the RFC2217 listener AND the
+WebSocket the browser pipes serial through — "the daemon never holds a half-open USB
+lease on a remote box."
 
 **2. The wedge kills (2026-10-15–24).** The bridge-Mac server wedged on dead clients
 "one too many times" — hence the browser-tab topology: the wedge class becomes
