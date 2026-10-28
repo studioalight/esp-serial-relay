@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""ESP serial relay — second-shore installer.
+"""ESP serial relay — installer.
 
-Encodes the field-verified install procedure (2026-10-28, see
-references/esp-relay-install-on-second-shore.md or INSTALL-SECOND-SHORE.md):
-dependencies, LaunchAgent with re-homed paths, and the tailscale serve route
-that publishes the relay dashboard tailnet-wide.
+Encodes the field-verified install procedure: dependencies, LaunchAgent with
+re-homed paths, and the optional tailscale serve route that publishes the
+relay dashboard tailnet-wide.
 
 Usage:
   python3 install_relay.py [--dry-run]
@@ -13,7 +12,7 @@ Usage:
 
 What it does:
   1. Verifies python3 + pyserial (+ websockets for the relay daemon)
-  2. Writes a LaunchAgent (app.clawkie.serial-relay) with THIS machine's paths
+  2. Writes a LaunchAgent (app.esp-serial-relay) with THIS machine's paths
   3. Bootstraps it and verifies the 4001/4002 listeners
   4. Adds `tailscale serve --https=8444 -> 127.0.0.1:4002` via the Tailscale.app
      binary (the CLI is usually NOT on PATH on macOS)
@@ -26,7 +25,8 @@ import plistlib
 import subprocess
 import sys
 
-LABEL = "app.clawkie.serial-relay"
+LABEL = "app.esp-serial-relay"
+LEGACY_LABELS = ["app.clawkie.serial-relay"]  # cleaned up when present
 RELAY_PORTS = (4001, 4002)
 SERVE_PORT = "8444"
 HOME = os.path.expanduser("~")
@@ -64,13 +64,13 @@ def find_relay_script():
 def find_tailscale_cli():
     candidates = [
         os.environ.get("TAILSCALE_CLI"),
-        "/opt/homebrew/bin/tailscale",           # VM 2 layout
-        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",  # VM 3 layout
+        "/opt/homebrew/bin/tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
         os.path.join(HOME, "Applications/Tailscale.app/Contents/MacOS/Tailscale"),
     ]
     for c in candidates:
         if c and os.access(c, os.X_OK):
-            # the .app binary sometimes self-identifies oddly; confirm it runs
+            # the .app binary self-identifies oddly sometimes; confirm it runs
             probe = subprocess.run([c, "version"], capture_output=True, text=True)
             if probe.returncode == 0 or "tailscale" in (probe.stdout + probe.stderr).lower():
                 return c
@@ -130,6 +130,9 @@ def main():
             plistlib.dump(plist, f)
         run(["plutil", "-lint", plist_path])
         run(["launchctl", "bootout", f"gui/{gui_uid}/{LABEL}"], check=False)
+        # clean up legacy labels from earlier distributions (harmless if absent)
+        for legacy in LEGACY_LABELS:
+            run(["launchctl", "bootout", f"gui/{gui_uid}/{legacy}"], check=False)
         run(["launchctl", "bootstrap", f"gui/{gui_uid}", plist_path])
 
     # 3 --- listener verification

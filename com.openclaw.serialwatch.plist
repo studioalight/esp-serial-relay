@@ -2,27 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>app.openclaw.serial-watch</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/python3</string>
-        <string>/tmp/serial_watch.py</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>5</integer>
-    <key>StandardOutPath</key>
-    <string>/Users/openclaw/Library/Logs/clawkie-serial-watch.out.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/openclaw/Library/Logs/clawkie-serial-watch.err.log</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    </dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>app.esp-serial-watch</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>__WATCHER_SCRIPT__</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/esp-serial-watch.err.log</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/esp-serial-watch.out.log</string>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
 </dict>
 </plist>

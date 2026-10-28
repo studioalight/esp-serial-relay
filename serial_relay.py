@@ -69,10 +69,14 @@ LOG_RING.setFormatter(logging.Formatter(
     "%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
 log.addHandler(LOG_RING)
 
-RFC_PORT = int(os.environ.get("CLAWKIE_RELAY_RFC_PORT", "4001"))
-WS_PORT = int(os.environ.get("CLAWKIE_RELAY_WS_PORT", "4002"))
-RFC_BIND = os.environ.get("CLAWKIE_RELAY_RFC_BIND", "127.0.0.1")
-BROWSER_WAIT_S = float(os.environ.get("CLAWKIE_RELAY_BROWSER_WAIT", "30"))
+def _env(name, default):
+    """ESP_RELAY_* preferred; legacy CLAWKIE_RELAY_* still honoured."""
+    return os.environ.get(name, os.environ.get("CLAWKIE_" + name[4:], default))
+
+RFC_PORT = int(_env("ESP_RELAY_RFC_PORT", "4001"))
+WS_PORT = int(_env("ESP_RELAY_WS_PORT", "4002"))
+RFC_BIND = _env("ESP_RELAY_RFC_BIND", "127.0.0.1")
+BROWSER_WAIT_S = float(_env("ESP_RELAY_BROWSER_WAIT", "30"))
 
 LOOP = None  # main asyncio loop, captured at startup (thread-safe handoffs)
 
@@ -185,7 +189,7 @@ PAGE = """<!doctype html>
  <div class="box-label">Step 1 — connect the device</div>
  <button id="btn" style="font-size:1rem;padding:.8rem 1.6rem">Connect USB serial</button>
  <div id="easy-state" style="margin-top:.6rem;font-family:var(--font-mono);font-size:.85rem;color:var(--color-mute)">not connected — click Connect, keep the tab open</div>
- <p class="hint" style="margin-top:.6rem">Pick the <em>ESP32 usbmodem</em> port when the browser asks. Keep this tab open — that's it. The gateway handles the rest and shows progress in Advanced mode.</p>
+ <p class="hint" style="margin-top:.6rem">Pick your <em>serial port</em> when the browser asks. Keep this tab open — that's it. The gateway handles the rest and shows progress in Advanced mode.</p>
 </div>
 <div class="box advanced">
  <div class="box-label">Serial bridge — bridge-Mac side</div>
@@ -202,7 +206,7 @@ PAGE = """<!doctype html>
 </div>
 <div class="box">
  <div class="box-label">Procedure</div>
- <p class="hint">Grant the browser access to the <em>ESP32 usbmodem</em> port, then keep
+ <p class="hint">Grant the browser access to your <em>USB serial port</em>, then keep
  this tab open while a flash runs. Bytes flow <em>browser ⇄ gateway</em>; the gateway
  exposes the line to <em>esptool</em> as rfc2217://127.0.0.1:4001. If a flash wedges,
  reloading this tab is the whole reset procedure.</p>

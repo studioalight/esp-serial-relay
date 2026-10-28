@@ -108,7 +108,7 @@ export default defineToolPlugin({
     tool({
       name: "esp_relay_install",
       description:
-        "Install the ESP serial relay on this machine (field-verified second-shore procedure): python deps, LaunchAgent app.clawkie.serial-relay with re-homed paths, 4001/4002 listener gate, tailscale serve route 8444.",
+        "Install the ESP serial relay on this machine (field-verified install procedure): python deps, LaunchAgent app.clawkie.serial-relay with re-homed paths, 4001/4002 listener gate, tailscale serve route 8444.",
       parameters: Type.Object({
         skipServe: Type.Optional(
           Type.Boolean({ description: "Skip the tailscale serve route (default false)." }),

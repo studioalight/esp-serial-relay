@@ -17,9 +17,9 @@ python3 install_relay.py --dry-run  # walkthrough without changes
 python3 install_relay.py --skip-serve
 ```
 
-The installer encodes the field-verified second-shore procedure (2026-10-28, VM 3):
+The installer encodes the field-verified install procedure (first executed cross-host, 2026-10-28):
 1. `pyserial --user` (websockets is usually preinstalled)
-2. LaunchAgent `app.clawkie.serial-relay` with THIS host's paths (script found beside
+2. LaunchAgent `app.esp-serial-relay` with THIS host's paths (legacy `app.clawkie.serial-relay` cleaned up when present) (script found beside
    the installer or in known workspace layouts)
 3. Listener gate: 4001 (RFC2217) + 4002 (dashboard) must both be listening
 4. `tailscale serve --bg --https=8444 http://127.0.0.1:4002` — CLI found via
@@ -37,8 +37,7 @@ The installer encodes the field-verified second-shore procedure (2026-10-28, VM 
 - **Gateway 443 ≠ relay 8444**: the gateway's managed serve (`mode: serve`) and your
   added `serve --bg` route are separate mechanisms; the route survives gateway restarts
   only if the CLI route was added with `--bg`.
-- **Relay log paths differ per shore** (`~/Library/Logs/serial-relay.err.log` here vs
-  VM 2's `clawkie-serial-relay.err.log`) — know which shore's log you're grepping.
+- **Log paths are per-install** — this installer writes `~/Library/Logs/serial-relay.err.log`; earlier hand-rolled installs may have used different names. Know which log you're grepping.
 - **`--after no_reset` leaves the board in download mode** — kick out with
   `esptool --before no_reset --after hard_reset chip_id` before the watcher re-reads.
 - **A zombie watcher holds :4001** after LaunchAgent respawn races — the relay logs
