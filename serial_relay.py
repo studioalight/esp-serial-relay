@@ -136,9 +136,9 @@ PAGE = """<!doctype html>
  .ann-input:focus{outline:none;border-color:var(--color-accent)}
  .ann-input::placeholder{color:#666}
  #mon .err{color:var(--color-bad)}
- .mon-ctl{display:flex;gap:.6rem;align-items:center;margin:.5rem 0 .3rem}
+ .mon-ctl{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.5rem 0 .3rem;row-gap:.35rem}
  .mon-ctl label{font-family:var(--font-mono);font-size:.68rem;color:var(--color-mute);letter-spacing:.08em;
-        display:flex;align-items:center;gap:.3rem;cursor:pointer}
+        display:flex;align-items:center;gap:.3rem;cursor:pointer;flex-shrink:0;white-space:nowrap}
  #mon-clear,#mon-save,.mini{font-family:var(--font-mono);font-size:.62rem;padding:.2rem .5rem;border-radius:4px;
         border:1px solid var(--color-line);background:transparent;color:var(--color-mute);cursor:pointer}
  #mon-clear:hover,#mon-save:hover,.mini:hover{color:var(--color-text)}
