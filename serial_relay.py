@@ -137,8 +137,11 @@ PAGE = """<!doctype html>
  .ann-input::placeholder{color:#666}
  #mon .err{color:var(--color-bad)}
  .mon-ctl{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.5rem 0 .3rem;row-gap:.35rem}
- .mon-ctl label{font-family:var(--font-mono);font-size:.68rem;color:var(--color-mute);letter-spacing:.08em;
+ .mon-ctl label,.mon-foot label{font-family:var(--font-mono);font-size:.68rem;color:var(--color-mute);letter-spacing:.08em;
         display:flex;align-items:center;gap:.3rem;cursor:pointer;flex-shrink:0;white-space:nowrap}
+ .mon-foot{display:flex;gap:.7rem;align-items:center;margin:.25rem 0 0;
+        font-family:var(--font-mono);font-size:.62rem;color:var(--color-mute)}
+ .mon-foot-legend{color:#666;letter-spacing:.03em}
  #mon-clear,#mon-save,.mini{font-family:var(--font-mono);font-size:.62rem;padding:.2rem .5rem;border-radius:4px;
         border:1px solid var(--color-line);background:transparent;color:var(--color-mute);cursor:pointer}
  #mon-clear:hover,#mon-save:hover,.mini:hover{color:var(--color-text)}
@@ -227,7 +230,6 @@ PAGE = """<!doctype html>
  <div class="mon-ctl">
   <label><input type="checkbox" id="show-text" checked> text</label>
   <label><input type="checkbox" id="show-hex"> hex</label>
-  <label><input type="checkbox" id="flow-dl" checked> device ⇄</label>
   <label><input type="checkbox" id="auto-scroll" checked> auto-scroll</label>
   <button class="mini" id="font-minus">A−</button>
   <button class="mini" id="font-plus">A+</button>
@@ -239,7 +241,11 @@ PAGE = """<!doctype html>
   <span id="bytes">0 B</span>
  </div>
  <div id="mon"></div>
- <p class="hint" style="margin-top:.4rem">Drag the bottom-right corner to resize. Text mode assembles clean lines — ↑ device → gateway, ↓ gateway → device — and collapses binary bursts; hex shows the raw per-chunk bus.</p>
+ <div class="mon-foot">
+  <label><input type="checkbox" id="flow-dl" checked> device ⇄ gateway flow arrows</label>
+  <span class="mon-foot-legend">↑ device → gateway · ↓ gateway → device</span>
+ </div>
+ <p class="hint" style="margin-top:.4rem">Drag the bottom-right corner to resize. Text mode assembles clean lines — collapses binary bursts; hex shows the raw per-chunk bus.</p>
 </div>
 <div class="box advanced">
  <div class="box-label">Link log</div>
