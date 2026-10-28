@@ -1,7 +1,7 @@
 import serial, time, os, sys
 
-# Default: the gateway serial-relay (browser-piped). The old bridge-Mac
-# server (rfc2217://100.87.66.78:4001) is retired 2026-10-15.
+# Default: the gateway serial-relay (browser-piped). A prior bridge-Mac
+# remote endpoint is retired 2026-10-15 (see the relay README's history notes).
 URL = os.environ.get("ESP_RELAY_SERIAL_URL",
     os.environ.get("CLAWKIE_SERIAL_URL", "rfc2217://127.0.0.1:4001"))
 LOG = "/tmp/amoled_serial_watch.log"
