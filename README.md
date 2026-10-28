@@ -94,6 +94,23 @@ board resets over high-latency links have their own failure modes and pacing rul
 USB-plumbing side: claiming a port, surviving hotplug, recovering from a dead holder —
 which is exactly the part the browser-tab topology and this relay add.
 
+## Browser support (Web Serial availability)
+
+The USB side of the topology depends on the [Web Serial API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API),
+which requires a Chromium-based browser over a **secure context** (HTTPS or localhost).
+Current support as of 2026-10:
+
+| Browser | Web Serial | Notes |
+|---|---|---|
+| Chrome / Edge / Brave / Opera (desktop) | ✅ | ≥ Chrome 89; the supported path |
+| Chrome for Android | ✅ (partial) | works on some devices; desktop recommended |
+| Safari (macOS / iOS) | ❌ | no Web Serial — use Chrome/Edge on the same Mac |
+| Firefox | ❌ | no Web Serial (behind experimental flag only) |
+
+Practical upshot: the tab that holds the serial port must be **Chrome, Edge, Brave, or
+Opera, opened over `https://`** (which the tailscale serve route provides) or
+`http://localhost` on the USB-host machine itself.
+
 ## Why the name says "esp"
 
 This distribution grew out of the Studio Alight room-node project, so the
