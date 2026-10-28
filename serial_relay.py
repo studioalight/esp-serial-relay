@@ -151,6 +151,7 @@ PAGE = """<!doctype html>
         display:flex;align-items:center;gap:.3rem;cursor:pointer;flex-shrink:0;white-space:nowrap}
  .mon-foot{display:flex;gap:.7rem;align-items:center;margin:.25rem 0 0;
         font-family:var(--font-mono);font-size:.62rem;color:var(--color-mute)}
+ .mon-foot.ann-row{margin-top:.4rem}
  .mon-foot-legend{color:var(--color-faint);letter-spacing:.03em}
  #mon-clear,#mon-save,.mini{font-family:var(--font-mono);font-size:.62rem;padding:.2rem .5rem;border-radius:4px;
         border:1px solid var(--color-line);background:transparent;color:var(--color-mute);cursor:pointer}
@@ -163,6 +164,7 @@ PAGE = """<!doctype html>
  .mode-chip:hover{color:var(--color-text)}
  .mode-chip.on{border-color:var(--color-accent);color:var(--color-text);box-shadow:0 0 8px rgba(255,0,0,.18)}
  body.easy .advanced{display:none}
+ body:not(.easy) .easy-only{display:none}
  .box-label{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.14em;
         text-transform:uppercase;color:var(--color-mute);margin-bottom:.7rem}
  button{font-family:var(--font-mono);font-size:.9rem;padding:.65rem 1.4rem;border-radius:6px;
@@ -203,7 +205,7 @@ PAGE = """<!doctype html>
  <button class="mode-chip" id="mode-adv">Advanced</button>
 </div>
 <div class="box" id="compat" style="display:none;border-color:var(--color-bad)"></div>
-<div class="box" id="easy-box">
+<div class="box easy-only" id="easy-box">
  <div class="box-label">Step 1 — connect the device</div>
  <button id="btn" style="font-size:1rem;padding:.8rem 1.6rem">Connect USB serial</button>
  <div id="easy-state" style="margin-top:.6rem;font-family:var(--font-mono);font-size:.85rem;color:var(--color-mute)">not connected — click Connect, keep the tab open</div>
@@ -253,9 +255,11 @@ PAGE = """<!doctype html>
   <label><input type="checkbox" id="show-stamps"> timestamps</label>
  </div>
  <div id="mon"></div>
- <div class="mon-foot">
+ <div class="mon-foot ann-row">
   <input class="ann-input" id="ann-text" type="text" placeholder="mark an event — e.g. 'start test' (lands in relay log with timestamp)" maxlength="120">
   <button class="mini" id="mon-annotate">mark</button>
+ </div>
+ <div class="mon-foot">
   <label><input type="checkbox" id="flow-dl" checked> device ⇄ gateway flow arrows</label>
   <span class="mon-foot-legend">↑ device → gateway · ↓ gateway → device</span>
   <span id="bytes" style="margin-left:auto">0 B</span>
