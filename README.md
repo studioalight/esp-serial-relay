@@ -3,6 +3,52 @@
 **A generic browser→RFC2217 serial-port relay for OpenClaw agents** — ESP32 is the
 primary use case, not a requirement.
 
+## The problem it addresses
+
+An OpenClaw agent lives on a gateway host (a VM, a Mac, a Linux box) — but the
+**development boards it needs to work with are plugged into a *different* machine**:
+a laptop on a desk, a bench Mac in another room, a colleague's desktop. USB is
+physical; agents are not.
+
+Without this bridge, every embedded-development turn hits the same wall:
+
+- **The agent can't see the board.** Flash, monitor, log-capture — all need a serial
+  port on a machine the agent may not control, or SSH keys the operator won't hand out.
+- **The workarounds are brittle.** ssh-piped socat/rsync chains, USB-over-network
+  daemons, or "email me the log file" loops — each adds a failure mode, none give the
+  agent live read/write, and none survive a wedged connection.
+- **The port is a single-slot resource.** Two consumers opening it concurrently wedge
+  each other; wedged holders require human intervention at the far end.
+- **Diagnostics lose the clock.** Cross-correlating a board's log with agent-side
+  events needs timestamps on a shared clock; raw serial streams come with none.
+
+## What it takes on (the design answers)
+
+- **Browser WebSerial as the local port-holder.** The USB-host Mac needs zero
+  software installation: a tab opens, the user grants port access, done. The browser
+  is the USB daemon — sandboxed, permission-gated, and reload-to-recover by design.
+- **One standard protocol on the tool side.** The relay speaks RFC2217 (pyserial's
+  own), so every existing serial tool — `esptool`, `idf.py`, `picotool`, miniterm,
+  anything — works against the remote device unchanged and locally.
+- **Wedging is survivable, not fatal.** Tab reloads recover the port; the relay
+  releases cleanly and waits; a single-instance-lock watcher prevents orphan holders
+  from fencing the port forever.
+- **The stream stays honest.** In-page ◆ annotations (which survive tab reloads),
+  millisecond wall-clock stamps injected by the capture watcher, and serial-line-rate
+  discipline — because >5 lines/s of board output both starves the attached tasks
+  and invalidates every latency measurement taken over the link.
+- **Install is a procedure, not a project.** The verified installer encodes the whole
+  path — dependencies, a LaunchAgent with re-homed per-host paths, a listener gate,
+  and an optional tailscale serve route — so a new host is minutes, not an afternoon.
+- **Agents operate it, not just humans.** Shipped as an OpenClaw tool-plugin:
+  `esp_relay_status` reports bridge state in any session; `esp_relay_install` runs
+  the installer. The install/distribute skill ships inside the payload.
+
+Known limits, honestly: the RFC2217 listener binds loopback (tools run on the same
+host as the relay — tunnel or run them there); the browser tab must stay open — a
+lost tab drops the serial lane until reconnected; and only one consumer may hold the
+port at a time, by design.
+
 ## What it actually is (the generic core)
 
 The relay daemon (`serial_relay.py`) is chip-agnostic. Its topology:
