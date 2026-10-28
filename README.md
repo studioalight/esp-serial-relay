@@ -3,6 +3,13 @@
 **A generic browser→RFC2217 serial-port relay for OpenClaw agents** — ESP32 is the
 primary use case, not a requirement.
 
+## Hear the intro song 🎵
+
+The plugin has its own anthem — "One Tab Holds the Line" — published on the D'ENT podcast:
+
+- [Listen on podcast.studioalight.com](https://podcast.studioalight.com/@DENT/episodes/the-espserialrelay--one-tab-holds-the-line-42) (direct)
+- [Listen on Apple Podcasts](https://podcasts.apple.com/se/podcast/dent/id1891627004?l=en-GB&i=1000798545934)
+
 ## The problem it addresses
 
 An OpenClaw agent lives on a gateway host (a VM, a Mac, a Linux box) — but the
