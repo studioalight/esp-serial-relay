@@ -250,15 +250,15 @@ PAGE = """<!doctype html>
   <button class="mini" id="font-plus">A+</button>
   <button class="mini" id="mon-clear">clear</button>
   <button class="mini" id="mon-save">save log</button>
-  <input class="ann-input" id="ann-text" type="text" placeholder="mark an event — e.g. 'start test' (lands in relay log with timestamp)" maxlength="120">
-  <button class="mini" id="mon-annotate">mark</button>
   <label><input type="checkbox" id="show-stamps"> timestamps</label>
-  <span id="bytes">0 B</span>
  </div>
  <div id="mon"></div>
  <div class="mon-foot">
+  <input class="ann-input" id="ann-text" type="text" placeholder="mark an event — e.g. 'start test' (lands in relay log with timestamp)" maxlength="120">
+  <button class="mini" id="mon-annotate">mark</button>
   <label><input type="checkbox" id="flow-dl" checked> device ⇄ gateway flow arrows</label>
   <span class="mon-foot-legend">↑ device → gateway · ↓ gateway → device</span>
+  <span id="bytes" style="margin-left:auto">0 B</span>
  </div>
  <p class="hint" style="margin-top:.4rem">Drag the bottom-right corner to resize. Text mode assembles clean lines — collapses binary bursts; hex shows the raw per-chunk bus.</p>
 </div>
