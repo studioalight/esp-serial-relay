@@ -72,6 +72,28 @@ with server-side ms timestamps), wall-clock-stamped capture output, a link-down
 Easy-mode recovery message, and an optional tailscale serve route so the dashboard
 is reachable tailnet-wide (`https://<host>.tail<net>.ts.net:8444/`).
 
+## What is RFC2217? (the protocol this runs on)
+
+[RFC 2217](https://www.rfc-editor.org/rfc/rfc2217.html) — *Telnet Com Port Control
+Option* (IETF, October 1997) — is the standard that makes a remote serial port behave
+like a local one: a server listens on TCP, and a small option channel inside the
+session carries the serial-line control traffic (baud rate, data bits, parity, stop
+bits, flow control, DTR/RTS modem lines) between client and server.
+
+pyserial speaks it natively on both ends:
+
+```python
+# on the machine with the device — a plain server, no relay needed for simple cases:
+serial.serial_for_url("rfc2217://host:4001", ...)   # client: any pyserial tool
+```
+
+The practical contract: the **client** sets line parameters, the **server** applies
+them to the real port, and every DTR/RTS toggle is a network roundtrip — which is why
+board resets over high-latency links have their own failure modes and pacing rules
+(see the traps section and the flash skill). What RFC2217 does *not* cover is the
+USB-plumbing side: claiming a port, surviving hotplug, recovering from a dead holder —
+which is exactly the part the browser-tab topology and this relay add.
+
 ## Why the name says "esp"
 
 This distribution grew out of the Studio Alight room-node project, so the
