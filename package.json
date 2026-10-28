@@ -42,5 +42,6 @@
     "build": {
       "openclawVersion": "2026.10.8"
     }
-  }
+  },
+  "license": "MIT"
 }
