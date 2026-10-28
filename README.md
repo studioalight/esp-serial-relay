@@ -142,14 +142,26 @@ family, reuse the daemon + installer and skip the ESP skills.
 
 ## Install
 
+**Standalone relay** (no OpenClaw needed):
+
 ```bash
 python3 install_relay.py            # deps + LaunchAgent + listeners + serve route
 python3 install_relay.py --dry-run  # walkthrough
 ```
 
-As an OpenClaw plugin: `openclaw plugins install npm-pack:<tgz>` (or `--link <repo>`
-for development, `clawhub:` once published). The installer is also exposed as the
-`esp_relay_install` agent tool when the plugin is enabled.
+**As an OpenClaw plugin** — plugin installs accept registry packages, local files,
+git checkouts, and ClawHub (URLs are deliberately not an install source), so the
+release tarball lands in two steps:
+
+```bash
+npm pack https://github.com/studioalight/esp-serial-relay/releases/download/v0.1.0/openclaw-plugin-esp-serial-relay-0.1.0.tgz
+openclaw plugins install ./openclaw-plugin-esp-serial-relay-0.1.0.tgz --accept-capabilities
+```
+
+(or `--link <repo>` for development; `clawhub:` once published). The installer is
+also exposed as the `esp_relay_install` agent tool when the plugin is enabled.
+Note: a plain `git:` install does not work — `dist/` is build output and untracked;
+the release tgz is the complete artifact.
 
 ## Traps the skill encodes (all field-caught)
 
