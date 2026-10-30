@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v19"
+RELAY_VERSION = "v20"
 
 
 class _RingLog(logging.Handler):
@@ -242,7 +242,7 @@ PAGE = """<!doctype html>
  <div class="phases">
   <span class="phase" id="ph-connect"><span class="dot"></span>connect</span>
   <span class="phase" id="ph-sync"><span class="dot"></span>sync</span>
-  <span class="phase" id="ph-erase"><span class="dot"></span>write</span>
+  <span class="phase" id="ph-write"><span class="dot"></span>write</span>
   <span class="phase" id="ph-verify"><span class="dot"></span>verify</span>
   <span class="phase" id="ph-reset"><span class="dot"></span>reset</span>
  </div>
@@ -862,7 +862,7 @@ DASH_PAGE = """<!doctype html>
  <div class="phases">
   <span class="phase" id="ph-connect"><span class="dot"></span>connect</span>
   <span class="phase" id="ph-sync"><span class="dot"></span>sync</span>
-  <span class="phase" id="ph-erase"><span class="dot"></span>write</span>
+  <span class="phase" id="ph-write"><span class="dot"></span>write</span>
   <span class="phase" id="ph-verify"><span class="dot"></span>verify</span>
   <span class="phase" id="ph-reset"><span class="dot"></span>reset</span>
  </div>
