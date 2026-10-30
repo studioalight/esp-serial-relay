@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v11"
+RELAY_VERSION = "v12"
 
 
 class _RingLog(logging.Handler):
@@ -586,6 +586,123 @@ def render_serial(b):
     return "".join(out)
 
 
+# ---------------------------------------------------------------------------
+# FIELD 2026-10-30 rung 21: PASSIVE esptool-phase decoding from the wire.
+# The esptool state panel needs no shim: esptool/idf.py/any flash tool speaks
+# the ROM bootloader protocol over the relayed port, and every request frame
+# starts 0xC0 0x00 <op> ... with op = the phase. Device acks are 0xC0 0x01.
+# App-level traffic is plain text (never SLIP-framed), so false positives are
+# rare. Direction + op give the phase; FLASH_BEGIN carries the total size and
+# FLASH_DATA each block size, so write % is derivable passively too.
+# Opcodes from esptool source (v5): SYNC=0x08 FLASH_BEGIN=0x02 FLASH_DATA=0x03
+# FLASH_END=0x04 SPI_FLASH_MD5=0x13 ERASE_FLASH=0xD0 ERASE_REGION=0xD1
+# CHANGE_BAUDRATE=0x0F MEM_BEGIN=0x05 MEM_END=0x06.
+WIRE_PHASE_OPS = {
+    0x08: ("connect", None),   # SYNC — sync handshake, reconnects mid-flash too
+    0x05: ("sync", None),      # MEM_BEGIN — stub loader upload (post-connect)
+    0x02: ("write", "begin"),  # FLASH_BEGIN — carries payload total
+    0x03: ("write", "block"),  # FLASH_DATA — carries block size
+    0x04: ("write", "end"),    # FLASH_END — payload written
+    0xD0: ("write", "erase"),  # ERASE_FLASH — full-chip erase (UI has no erase chip)
+    0xD1: ("write", "erase"),  # ERASE_REGION
+    0x13: ("verify", None),    # SPI_FLASH_MD5 — digest check
+    0x06: ("sync", None),     # MEM_END — stub uploaded; FLASH_* follows. kind must NOT be "end" (FLASH_END's branch)
+}
+
+
+def _set_wire_phase(r, phase, note=None):
+    r.phase = {"phase": phase, "pct": None}
+    r.phase_src = "wire"
+    # flushed to consoles by the monitor flush loop (async; called from tap thread)
+    r._wire_phase_frame = json.dumps({"t": "phase", "phase": phase, "pct": None})
+
+
+def wire_decode_phase(r, data, direction):
+    """Scan a relayed chunk for ROM-bootloader request frames (host->device).
+
+    Frames are SLIP-wrapped: C0 00 <op> <len:2le> <chk:4le> ... C0. We keep a
+    small sliding buffer per direction because frames can split across reads.
+    Only the HOST side (tx) drives phases; device acks (rx, resp byte 0x01)
+    confirm but the panel derives state from requests alone.
+    """
+    # reset derivation: after verify, plain device OUTPUT (boot log) means the
+    # chip reset. Device ACK frames (rx, starts with C0 01) are NOT output —
+    # they arrive instantly after the MD5 command and must not trip it.
+    if (direction == "rx" and getattr(r, "phase", None)
+            and r.phase.get("phase") == "verify"
+            and not (data[:2] == b"\xc0\x01")):
+        _set_wire_phase(r, "reset")
+        r._phase_scan = bytearray()
+        return
+    b = r._phase_scan
+    b += data
+    # safety purge only for runaway buffers; must NEVER cut a whole incoming
+    # frame (a FLASH_DATA frame is ~4.1 KB with escapes, max op data 0x4000
+    # -> worst frame ~17 KB, so tail keep 24 KB + cap 64 KB guarantees headers)
+    if len(b) > 65536:
+        del b[:-24576]
+    i = 0
+    n = len(b)
+    while i < n - 2:
+        # find SLIP frame start: C0 followed by direction byte 00 (host request)
+        if b[i] != 0xC0:
+            i += 1
+            continue
+        if i + 5 > n:
+            break               # need more bytes to judge
+        if b[i + 1] != 0x00:
+            if b[i + 1] == 0x01:  # device response frame — skip past it cheaply
+                i += 2
+                continue
+            i += 1
+            continue
+        op = b[i + 2]
+        hit = WIRE_PHASE_OPS.get(op)
+        if hit is None:
+            i += 2
+            continue
+        # plausible length field: len < 0x4000 keeps noise out of app text
+        ln = b[i + 3] | (b[i + 4] << 8)
+        if ln > 0x4000:
+            i += 2
+            continue
+        phase, kind = hit
+        if kind == "begin":
+            # FLASH_BEGIN payload (source-verified, esptool flash_begin):
+            # data[0:4]=erase_size, data[4:8]=num_blocks, data[8:12]=write_size,
+            # data[12:16]=offset. Payload total = num_blocks × write_size.
+            d = i + 9           # data starts after 0xC0 + BBHI(8)
+            if d + 16 <= n:
+                num_blocks = b[d + 4] | (b[d + 5] << 8) | (b[d + 6] << 16) | (b[d + 7] << 24)
+                write_size = b[d + 8] | (b[d + 9] << 8) | (b[d + 10] << 16) | (b[d + 11] << 24)
+                total = num_blocks * write_size
+                if 0 < total < (1 << 27):
+                    r._flash_total = total
+                    r._flash_done = 0
+                    _set_wire_phase(r, "write", "begin")
+        elif kind == "block":
+            if r._flash_total:
+                r._flash_done += ln     # FLASH_DATA len field == block payload bytes
+                pct = min(100, int(100.0 * r._flash_done / r._flash_total))  # floor: 100 only when done
+                r.phase = {"phase": "write", "pct": pct}
+                r.phase_src = "wire"
+                r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": pct})
+        elif kind == "end":
+            r._flash_total = None
+            _set_wire_phase(r, "write", "end")
+        elif phase == "connect":
+            _set_wire_phase(r, "connect")
+        elif phase == "sync":
+            _set_wire_phase(r, "sync")   # stub loader upload (MEM_BEGIN/MEM_END)
+        elif kind == "erase":
+            _set_wire_phase(r, "write", "erase")
+        elif phase == "verify":
+            _set_wire_phase(r, "verify")
+        # jump past this frame's header; frame body may contain 0xC0-escaped junk
+        i = i + 9
+    del b[:max(0, min(i, len(b)) - 4)]  # retain possible split-frame tail
+
+
 DASH_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -596,7 +713,7 @@ DASH_PAGE = """<!doctype html>
 <style>
  :root{ --color-bg:#0a0a0a; --color-text:#f5f5f5; --color-accent:#ff0000;
         --font-display:'Space Grotesk',sans-serif; --font-mono:'Space Mono',monospace;
-        --color-mute:#999; --color-line:#2a2a2a; --color-ok:#58c158; --color-bad:#e05a5a ,
+        --color-mute:#999; --color-line:#2a2a2a; --color-ok:#58c158; --color-bad:#e05a5a;
           --color-panel:#161616; --color-inset:#050505; --color-inset-text:#b9c2b9;
           --color-faint:#666; --color-line-soft:#3a3a3a }
  :root[data-theme="light"]{ --color-bg:#f7f4ee; --color-text:#17181a; --color-accent:#c1121f;
@@ -902,7 +1019,14 @@ class Relay:
         self.mon_buf = {"rx": bytearray(), "tx": bytearray()}
         self.counts = {"rx": 0, "tx": 0}
         self.last_activity = None
-        self.phase = None        # last esptool phase frame from the shim
+        self.phase = None        # last esptool phase frame (from the shim OR wire-decoded)
+        self.phase_src = None    # where the phase frame came from: "wire" = decoded from ROM protocol bytes
+        self._flash_total = None # total bytes announced by FLASH_BEGIN (for write %)
+        self._flash_done = 0     # cumulative bytes announced by FLASH_DATA blocks
+        self._phase_scan = bytearray()   # sliding window for the wire phase decoder
+        self._wire_phase_frame = None    # pending phase frame to broadcast on flush
+        self._decode_q = asyncio.Queue(maxsize=512)  # pump -> decoder task handoff
+        self._decode_drops = 0
         self._mon_flush_scheduled = False
 
     # ---------- browser side ----------
@@ -1034,6 +1158,12 @@ class Relay:
         """Every byte that crosses the relay, either way, feeds the mirror."""
         self.counts[direction] = self.counts.get(direction, 0) + len(data)
         self.last_activity = time.time()
+        # rung 21: passive phase decode runs OFF the pump path — hand a copy to
+        # the decoder task; on overflow we drop the chunk (SLIP self-resyncs).
+        try:
+            self._decode_q.put_nowait((direction, bytes(data)))
+        except asyncio.QueueFull:
+            self._decode_drops += 1
         buf = self.mon_buf[direction]
         room = 2048 - len(buf)
         if room > 0:
@@ -1060,6 +1190,10 @@ class Relay:
         self._mon_flush_scheduled = False
         ts = time.strftime("%H:%M:%S")
         frames = []
+        # wire-decoded phase frame (rung 21): piggyback on the console flush
+        if self._wire_phase_frame is not None:
+            frames.append(self._wire_phase_frame)
+            self._wire_phase_frame = None
         for d in ("rx", "tx"):
             buf = self.mon_buf[d]
             if not buf:
@@ -1079,6 +1213,23 @@ class Relay:
             for c in dead:
                 self.consoles.discard(c)
 
+    async def _decode_pump(self):
+        """Rung 21: passive esptool-phase decode, off the serial pump path.
+
+        Chunks arrive in order via _decode_q (FIFO from monitor_tap); a slow
+        scan can never stall the relay — the pump awaits I/O regardless, and
+        worst case here is the panel lagging. Overflow drops chunks: the SLIP
+        window self-resyncs on the next 0xC0 0x00 boundary, so the only cost
+        is a missed phase hint, never corrupted relayed bytes (decoder only
+        ever sees copies).
+        """
+        while True:
+            direction, chunk = await self._decode_q.get()
+            try:
+                wire_decode_phase(self, chunk, direction)
+            except Exception:
+                pass  # strictly observational: a decoder bug must not kill the task
+
     def status_snapshot(self):
         now = time.time()
         return {
@@ -1092,6 +1243,7 @@ class Relay:
             "last_activity_s": (int(now - self.last_activity)
                                 if self.last_activity else None),
             "esptool_phase": self.phase,
+            "esptool_phase_src": self.phase_src,
             "mon_tail": list(self.mon_lines)[-30:],
             "log_tail": list(LOG_RING.deque)[-40:],
         }
@@ -1239,6 +1391,10 @@ async def main():
         relay.browser_handler, "0.0.0.0", WS_PORT,
         process_request=http_gate, max_size=None, compression="deflate")
     log.info("browser page + WS on :%d", WS_PORT)
+
+    # rung 21: passive phase decoder runs as its own task, off the pump path
+    LOOP.create_task(relay._decode_pump())
+    log.info("wire phase decoder task started")
 
     rfc_server = await asyncio.start_server(
         relay.rfc2217_client, RFC_BIND, RFC_PORT)
