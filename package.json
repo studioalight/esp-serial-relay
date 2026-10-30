@@ -19,7 +19,8 @@
     "monitor_sample.py",
     "utun5_rate.py",
     "com.openclaw.serialwatch.plist",
-    "skills"
+    "skills",
+    "assets"
   ],
   "peerDependencies": {
     "openclaw": ">=2026.5.17"
