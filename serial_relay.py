@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v18"
+RELAY_VERSION = "v19"
 
 
 class _RingLog(logging.Handler):
@@ -427,6 +427,7 @@ function phaseHit(name){
   const note=$('phase-note'); if(note) note.textContent='esptool: '+name+(name==='write'&&arguments[1]!==undefined?` (${arguments[1]}%)`:'');
 }
 function phaseReset(){ phaseOrder.forEach(p=>{phaseEls[p].classList.remove('active','done');}); const n=$('phase-note'); if(n) n.textContent='esptool idle'; }
+setInterval(()=>{ const n=$('phase-note'); if(n && !n.textContent.startsWith('esptool:')) n.textContent='esptool idle · phase frames received: '+phaseFramesSeen; }, 2000);
 
 /* console feed: phase frames + lines */
 let monSock=null, monBackoff=500;
@@ -434,9 +435,11 @@ function openMon(){
   try{
     monSock=new WebSocket(wsUrl.replace('/relay','/console'));
     monSock.onopen=()=>{monBackoff=500;};
+    let phaseFramesSeen=0;
     monSock.onmessage=ev=>{
       if(ev.data[0]==='{'){ const m=JSON.parse(ev.data);
-        if(m.t==='phase'){ phaseHit(m.phase, m.pct);
+        if(m.t==='phase'){ phaseFramesSeen++;
+          phaseHit(m.phase, m.pct);
           if(typeof m.pct==='number') phaseHit('write', m.pct); }
       } else { log(ev.data); } };
     monSock.onclose=()=>{ setTimeout(openMon,monBackoff=Math.min(monBackoff*2,8000)); };
@@ -908,7 +911,7 @@ function monAdd(dir,ts,text){
   while(mon.children.length>600) mon.firstChild.remove();
 }
 $('mon-clear').onclick=()=>{$('mon').innerHTML='';};
-let monSock=null, backoff=500;
+let monSock=null, backoff=500, phaseFramesSeen=0;
 function setLive(on){
   const l=$('live'); l.className=on?'on':'off';
   l.textContent=on?'\\u25cf live':'\\u25cb connecting';
@@ -921,7 +924,7 @@ function openMon(){
       if(ev.data[0]!=='{') return;
       let m; try{m=JSON.parse(ev.data)}catch(e){return}
       if(m.t==='mon') monAdd(m.dir,m.ts,m.text);
-      else if(m.t==='phase') phaseHit(m.phase,m.pct);
+      else if(m.t==='phase'){ phaseFramesSeen++; phaseHit(m.phase,m.pct); }
     };
     monSock.onclose=()=>{ setLive(false); setTimeout(openMon,backoff=Math.min(backoff*2,8000)); };
   }catch(e){ setLive(false); setTimeout(openMon,2000); }
@@ -945,6 +948,7 @@ async function poll(){
     el('st-bytes', fmtB(s.counts.rx)+' \\u2191 · '+fmtB(s.counts.tx)+' \\u2193');
     el('st-last', s.last_activity_s==null?'—':s.last_activity_s+'s ago');
     if(s.esptool_phase) phaseHit(s.esptool_phase.phase, s.esptool_phase.pct);
+    else { const n=$('phase-note'); if(n && phaseFramesSeen===0) n.textContent='esptool idle · phase frames received: 0'; }
     renderLog(s.log_tail);
     if(s.mon_tail && s.mon_tail.length && $('mon').children.length===0){
       s.mon_tail.forEach(e=>monAdd(e[1],e[0],e[2]));
