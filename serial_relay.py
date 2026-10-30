@@ -1322,6 +1322,12 @@ class Relay:
                     batch += b
                 if batch:
                     started = True
+                    # rung 22: tap the FILTERED payload (telnet/RFC2217
+                    # controls stripped) as tx — this is the only path
+                    # esptool's ROM-protocol frames take, and the phase
+                    # decoder reads phases from host requests. Without this
+                    # tap, tx stays 0 during a flash (field 08:28).
+                    self.monitor_tap(bytes(batch), "tx")
                     if self.browser_ready.is_set():
                         await self._ws_send(bytes(batch))
                     # else: payload dropped when no browser link (USB is
