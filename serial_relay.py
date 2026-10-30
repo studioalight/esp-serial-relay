@@ -139,6 +139,7 @@ PAGE = """<!doctype html>
         border:1px solid var(--color-line);border-radius:8px;padding:.8rem;height:15rem;min-height:5rem;
         max-height:70vh;overflow-y:auto;resize:vertical;
         white-space:pre-wrap;word-break:break-all;color:var(--color-inset-text)}
+ #mon.stamps>div{padding-left:13ch;text-indent:-13ch}
  #mon .tx{color:#c8896a} #mon .rx{color:#7ea87e} #mon .bin{color:#717171;font-style:italic}
  #mon .ann{color:#e8d9a0;font-style:italic}
  .ann-input{font-family:var(--font-mono);font-size:.62rem;background:var(--color-panel);color:var(--color-text);
@@ -306,13 +307,16 @@ function dec(bytes){
   }
   return s;
 }
-function stampPrefix(){
+function stampStr(){
   const d=new Date();
-  return $('show-stamps').checked ? d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0')+' ' : '';
+  return d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
 }
 function renderLine(el){
   const dir=el.dataset.dir;
-  el.textContent=stampPrefix()
+  // FIELD 2026-10-30: stamps must reflect the line's ARRIVAL time — a toggle
+  // re-render used new Date() and rewrote history with the toggle moment.
+  const stamp=($('show-stamps').checked&&el.dataset.ts)?el.dataset.ts+' ':'';
+  el.textContent=stamp
     +(dir==='ann'?'':(dir==='rx'?'\u2191 ':'\u2193 '))
     +el.dataset.text;
 }
@@ -325,6 +329,7 @@ function emit(dir,seg){
   line.className=dir+(binary?' bin':'');
   M.lastDir=dir;
   line.dataset.dir=dir;
+  line.dataset.ts=stampStr();
   line.dataset.text=binary?`\u27e8binary ${seg.length} B\u27e9`:seg;
   renderLine(line);
   mon.append(line); trimMon(mon);
@@ -343,6 +348,7 @@ function monAdd(bytes, dir){
     const mon=$('mon');
     const line=document.createElement('div'); line.className=dir;
     line.dataset.dir=dir;
+    line.dataset.ts=stampStr();
     line.dataset.text=`(${bytes.length} B) `
       +[...bytes].slice(0,48).map(hx).join(' ')
       +(bytes.length>48?` \u2026+${bytes.length-48}`:'');
@@ -380,6 +386,7 @@ $('font-plus').onclick=()=>setFont(1);
 function addAnn(text){
   const el=document.createElement('div'); el.className='ann';
   el.dataset.dir='ann';
+  el.dataset.ts=stampStr();
   el.dataset.text='\u25c6 '+(text.trim()||'(mark)');
   renderLine(el);
   const mon=$('mon'); mon.append(el); trimMon(mon); monScroll(mon);
@@ -394,7 +401,12 @@ function submitAnn(){
 }
 $('mon-annotate').onclick=submitAnn;
 $('ann-text').addEventListener('keydown',e=>{ if(e.key==='Enter') submitAnn(); });
-$('show-stamps').onchange=()=>{ for(const el of $('mon').children) renderLine(el); };
+$('show-stamps').onchange=()=>{
+  // hanging indent only while stamps are shown: wrapped continuations align
+  // under the text (past the stamp column) instead of wrapping to col 0
+  $('mon').classList.toggle('stamps',$('show-stamps').checked);
+  for(const el of $('mon').children) renderLine(el);
+};
 
 /* phase strip */
 const phaseOrder=['connect','sync','write','verify','reset'];
