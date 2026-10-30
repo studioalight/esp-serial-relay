@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v20"
+RELAY_VERSION = "v21"
 
 
 class _RingLog(logging.Handler):
@@ -242,6 +242,7 @@ PAGE = """<!doctype html>
  <div class="phases">
   <span class="phase" id="ph-connect"><span class="dot"></span>connect</span>
   <span class="phase" id="ph-sync"><span class="dot"></span>sync</span>
+  <span class="phase" id="ph-erase"><span class="dot"></span>erase</span>
   <span class="phase" id="ph-write"><span class="dot"></span>write</span>
   <span class="phase" id="ph-verify"><span class="dot"></span>verify</span>
   <span class="phase" id="ph-reset"><span class="dot"></span>reset</span>
@@ -414,7 +415,7 @@ $('show-stamps').onchange=()=>{
 };
 
 /* phase strip */
-const phaseOrder=['connect','sync','write','verify','reset'];
+const phaseOrder=['connect','sync','erase','write','verify','reset'];
 const phaseEls={}; phaseOrder.forEach(p=>phaseEls[p]=$('ph-'+p));
 function phaseHit(name){
   const el=phaseEls[name]; if(!el) return;
@@ -630,8 +631,8 @@ WIRE_PHASE_OPS = {
     0x12: ("write", "end-defl"),    # FLASH_DEFL_END
     0x03: ("write", "block"),  # FLASH_DATA — carries block size
     0x04: ("write", "end"),    # FLASH_END — payload written
-    0xD0: ("write", "erase"),  # ERASE_FLASH — full-chip erase (UI has no erase chip)
-    0xD1: ("write", "erase"),  # ERASE_REGION
+    0xD0: ("erase", None),     # ERASE_FLASH — explicit full-chip erase
+    0xD1: ("erase", None),     # ERASE_REGION
     0x13: ("verify", None),    # SPI_FLASH_MD5 — digest check
     0x06: ("sync", None),     # MEM_END — stub uploaded; FLASH_* follows. kind must NOT be "end" (FLASH_END's branch)
 }
@@ -752,8 +753,8 @@ def wire_decode_phase(r, data, direction):
             _set_wire_phase(r, "connect")
         elif phase == "sync":
             _set_wire_phase(r, "sync")   # stub loader upload (MEM_BEGIN/MEM_END)
-        elif kind == "erase":
-            _set_wire_phase(r, "write", "erase")
+        elif phase == "erase":
+            _set_wire_phase(r, "erase")   # key on the PHASE — the table's kind for erase is None
         elif phase == "verify":
             _set_wire_phase(r, "verify")
         # jump past this frame's header; frame body may contain 0xC0-escaped junk
@@ -862,6 +863,7 @@ DASH_PAGE = """<!doctype html>
  <div class="phases">
   <span class="phase" id="ph-connect"><span class="dot"></span>connect</span>
   <span class="phase" id="ph-sync"><span class="dot"></span>sync</span>
+  <span class="phase" id="ph-erase"><span class="dot"></span>erase</span>
   <span class="phase" id="ph-write"><span class="dot"></span>write</span>
   <span class="phase" id="ph-verify"><span class="dot"></span>verify</span>
   <span class="phase" id="ph-reset"><span class="dot"></span>reset</span>
@@ -889,7 +891,7 @@ function fmtDur(s){ if(s==null)return'—'; s=Math.max(0,s|0);
   return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; }
 function fmtB(n){ return n>=1048576 ? (n/1048576).toFixed(2)+' MB'
   : n>=1024 ? (n/1024).toFixed(1)+' kB' : n+' B'; }
-const phaseOrder=['connect','sync','write','verify','reset'];
+const phaseOrder=['connect','sync','erase','write','verify','reset'];
 const phaseEls={}; phaseOrder.forEach(p=>phaseEls[p]=$('ph-'+p));
 function phaseHit(name,pct){
   const el=phaseEls[name]; if(!el) return;
