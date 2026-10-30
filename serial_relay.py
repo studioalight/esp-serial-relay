@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v14"
+RELAY_VERSION = "v15"
 
 
 class _RingLog(logging.Handler):
@@ -618,6 +618,9 @@ WIRE_PHASE_OPS = {
     0x08: ("connect", None),   # SYNC — sync handshake, reconnects mid-flash too
     0x05: ("sync", None),      # MEM_BEGIN — stub loader upload (post-connect)
     0x02: ("write", "begin"),  # FLASH_BEGIN — carries payload total
+    0x10: ("write", "begin-defl"),  # FLASH_DEFL_BEGIN — compressed transfer
+    0x11: ("write", "block-defl"),  # FLASH_DEFL_DATA — compressed block
+    0x12: ("write", "end-defl"),    # FLASH_DEFL_END
     0x03: ("write", "block"),  # FLASH_DATA — carries block size
     0x04: ("write", "end"),    # FLASH_END — payload written
     0xD0: ("write", "erase"),  # ERASE_FLASH — full-chip erase (UI has no erase chip)
@@ -684,27 +687,34 @@ def wire_decode_phase(r, data, direction):
             i += 2
             continue
         phase, kind = hit
-        if kind == "begin":
-            # FLASH_BEGIN payload (source-verified, esptool flash_begin):
-            # data[0:4]=erase_size, data[4:8]=num_blocks, data[8:12]=write_size,
-            # data[12:16]=offset. Payload total = num_blocks × write_size.
+        if kind in ("begin", "begin-defl"):
+            # Source-verified payloads (esptool v5):
+            #   FLASH_BEGIN     <erase_size, num_blocks, write_size, offset>
+            #   FLASH_DEFL_BEGIN <write_size, num_blocks, write_size, offset>
+            # Progress total = num_blocks × write_size either way (data[4:8] ×
+            # data[8:12]). FIELD 08:57 (real capture): frames split across
+            # 4 KB socket reads were skipped then deleted — write never lit,
+            # pct stayed None. Incomplete frames must WAIT: if the payload
+            # range isn't in the buffer yet, stop and retain until more ends.
+            if i + 9 + 16 > n:
+                del b[:i]
+                return  # wait for the next chunk to complete this frame
             d = i + 9           # data starts after 0xC0 + BBHI(8)
-            if d + 16 <= n:
-                num_blocks = b[d + 4] | (b[d + 5] << 8) | (b[d + 6] << 16) | (b[d + 7] << 24)
-                write_size = b[d + 8] | (b[d + 9] << 8) | (b[d + 10] << 16) | (b[d + 11] << 24)
-                total = num_blocks * write_size
-                if 0 < total < (1 << 27):
-                    r._flash_total = total
-                    r._flash_done = 0
-                    _set_wire_phase(r, "write", "begin")
-        elif kind == "block":
+            num_blocks = b[d + 4] | (b[d + 5] << 8) | (b[d + 6] << 16) | (b[d + 7] << 24)
+            write_size = b[d + 8] | (b[d + 9] << 8) | (b[d + 10] << 16) | (b[d + 11] << 24)
+            total = num_blocks * write_size
+            if 0 < total < (1 << 27):
+                r._flash_total = total
+                r._flash_done = 0
+                _set_wire_phase(r, "write", "begin")
+        elif kind in ("block", "block-defl"):
             if r._flash_total:
                 r._flash_done += ln     # FLASH_DATA len field == block payload bytes
                 pct = min(100, int(100.0 * r._flash_done / r._flash_total))  # floor: 100 only when done
                 r.phase = {"phase": "write", "pct": pct}
                 r.phase_src = "wire"
                 r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": pct})
-        elif kind == "end":
+        elif kind in ("end", "end-defl"):
             r._flash_total = None
             _set_wire_phase(r, "write", "end")
         elif phase == "connect":
