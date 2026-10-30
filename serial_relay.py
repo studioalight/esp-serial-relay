@@ -767,6 +767,7 @@ DASH_PAGE = """<!doctype html>
  #mon{font-family:var(--font-mono);font-size:.66rem;line-height:1.5;background:var(--color-inset);
        border:1px solid var(--color-line);border-radius:8px;padding:.8rem;height:18rem;
        overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--color-inset-text)}
+ #mon>div{padding-left:9ch;text-indent:-9ch}   /* stamps HH:MM:SS: continuations hang under text */
  #mon .rx{color:#7ea87e} #mon .tx{color:#c8896a}
  #dlog{font-family:var(--font-mono);font-size:.64rem;line-height:1.45;white-space:pre-wrap;
        color:var(--color-ok);max-height:12rem;overflow-y:auto;background:var(--color-inset);
