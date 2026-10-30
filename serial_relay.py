@@ -1050,6 +1050,10 @@ class Relay:
         self._wire_phase_frame = None    # pending phase frame to broadcast on flush
         self._decode_q = asyncio.Queue(maxsize=512)  # pump -> decoder task handoff
         self._decode_drops = 0
+        # rung 23: raw-frame capture ring (toggleable) — replay stock for the
+        # phase decoder, no board needed. Entries (ts, dir, hex); bounded.
+        self.capture_on = False
+        self.cap = deque(maxlen=4000)
         self._mon_flush_scheduled = False
 
     # ---------- browser side ----------
@@ -1181,6 +1185,8 @@ class Relay:
         """Every byte that crosses the relay, either way, feeds the mirror."""
         self.counts[direction] = self.counts.get(direction, 0) + len(data)
         self.last_activity = time.time()
+        if self.capture_on:
+            self.cap.append((time.strftime("%H:%M:%S"), direction, data.hex()))
         # rung 21: passive phase decode runs OFF the pump path — hand a copy to
         # the decoder task; on overflow we drop the chunk (SLIP self-resyncs).
         try:
@@ -1389,6 +1395,30 @@ async def http_gate(connection, request):
             ("Content-Type", "text/html; charset=utf-8"),
             ("Content-Length", str(len(body))),
         ]), body)
+    if request.path == "/capture/on" or request.path == "/capture/off":
+        r = relay_state.get("relay")
+        if r is not None:
+            r.capture_on = request.path.endswith("/on")
+            body = ("capture ON" if r.capture_on else "capture OFF").encode()
+        else:
+            body = b"no relay"
+        return Response(200, "OK", Headers([("Content-Type", "text/plain")]), body)
+    if request.path == "/capture/dump.txt":
+        r = relay_state.get("relay")
+        lines = []
+        if r is not None:
+            for ts, d, hx in list(r.cap):
+                lines.append(f"{ts} {d} {hx}")
+        body = ("\n".join(lines) + "\n").encode()
+        return Response(200, "OK", Headers([
+            ("Content-Type", "text/plain; charset=utf-8"),
+            ("Content-Disposition", "attachment; filename=relay_capture.txt"),
+        ]), body)
+    if request.path == "/capture/clear":
+        r = relay_state.get("relay")
+        if r is not None:
+            r.cap.clear()
+        return Response(200, "OK", Headers([("Content-Type", "text/plain")]), b"cleared")
     if request.path == "/status.json":
         r = relay_state.get("relay")
         snap = r.status_snapshot() if r is not None else {"ok": False}
