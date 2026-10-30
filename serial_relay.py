@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v21"
+RELAY_VERSION = "v22"
 
 
 class _RingLog(logging.Handler):
@@ -134,6 +134,15 @@ PAGE = """<!doctype html>
  .phase.active{border-color:var(--color-accent);color:var(--color-text);box-shadow:0 0 10px rgba(255,0,0,.2)}
  .phase.active .dot{background:var(--color-accent);box-shadow:0 0 8px rgba(255,0,0,.6)}
  .phase.done{color:var(--color-text)} .phase.done .dot{background:var(--color-ok)}
+ /* write progress bar (v21.5): thin bar under the phase strip */
+ .pbar{height:.5rem;border:1px solid var(--color-line);border-radius:4px;background:var(--color-inset);
+        margin:.35rem 0 .2rem;overflow:hidden;display:none}
+ .pbar.on{display:block}
+ .pbar>i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--color-accent),#ff6b4a);
+        transition:width .25s ease-out}
+ .pbar-span{font-family:var(--font-mono);font-size:.62rem;color:var(--color-mute);letter-spacing:.06em;
+        display:none}
+ .pbar-span.on{display:block}
  /* serial monitor */
  #mon{font-family:var(--font-mono);font-size:.72rem;line-height:1.55;background:var(--color-inset);
         border:1px solid var(--color-line);border-radius:8px;padding:.8rem;height:15rem;min-height:5rem;
@@ -247,6 +256,8 @@ PAGE = """<!doctype html>
   <span class="phase" id="ph-verify"><span class="dot"></span>verify</span>
   <span class="phase" id="ph-reset"><span class="dot"></span>reset</span>
  </div>
+ <div class="pbar" id="pbar"><i id="pbar-fill"></i></div>
+ <span class="pbar-span" id="pbar-span">write 0% · 0.0 MB</span>
  <p class="hint" id="phase-note">Phases light up from the gateway's esptool console feed during a flash.</p>
 </div>
 <div class="box advanced">
@@ -427,6 +438,19 @@ function phaseHit(name){
   el.classList.add('active');
   const note=$('phase-note'); if(note) note.textContent='esptool: '+name+(name==='write'&&arguments[1]!==undefined?` (${arguments[1]}%)`:'');
 }
+/* write progress bar (v21.5) */
+let pbarShown=false;
+function pbarHit(pct){
+  const bar=$('pbar'), fill=$('pbar-fill'), span=$('pbar-span');
+  if(!bar||!fill||!span) return;
+  if(pct===false||pct===null&&pbarShown===false){ if(pct===false){bar.classList.remove('on');span.classList.remove('on');pbarShown=false;} return; }
+  if(!pbarShown){ bar.classList.add('on'); span.classList.add('on'); pbarShown=true; }
+  fill.style.width=Math.min(100,pct)+'%';
+  span.textContent='write '+Math.min(100,pct)+'%';
+  if(pct>=100){ bar.classList.remove('on'); span.classList.remove('on'); pbarShown=false; phaseEls.write.classList.remove('active'); phaseEls.write.classList.add('done'); }
+}
+function pbarHide(){ const bar=$('pbar'), span=$('pbar-span'); if(!bar) return;
+  bar.classList.remove('on'); span.classList.remove('on'); pbarShown=false; }
 function phaseReset(){ phaseOrder.forEach(p=>{phaseEls[p].classList.remove('active','done');}); const n=$('phase-note'); if(n) n.textContent='esptool idle'; }
 setInterval(()=>{ const n=$('phase-note'); if(n && !n.textContent.startsWith('esptool:')) n.textContent='esptool idle · phase frames received: '+phaseFramesSeen; }, 2000);
 
@@ -441,7 +465,9 @@ function openMon(){
       if(ev.data[0]==='{'){ const m=JSON.parse(ev.data);
         if(m.t==='phase'){ phaseFramesSeen++;
           phaseHit(m.phase, m.pct);
-          if(typeof m.pct==='number') phaseHit('write', m.pct); }
+          if(typeof m.pct==='number'){ phaseHit('write', m.pct); pbarHit(m.pct); }
+          else if(m.phase==='write'&&!pbarShown && m.pct===null) { /* begin: show at 0 */ pbarHit(0); }
+          else if(m.phase==='verify'||m.phase==='reset'){ pbarHide(); } }
       } else { log(ev.data); } };
     monSock.onclose=()=>{ setTimeout(openMon,monBackoff=Math.min(monBackoff*2,8000)); };
   }catch(e){}
@@ -868,6 +894,8 @@ DASH_PAGE = """<!doctype html>
   <span class="phase" id="ph-verify"><span class="dot"></span>verify</span>
   <span class="phase" id="ph-reset"><span class="dot"></span>reset</span>
  </div>
+ <div class="pbar" id="pbar"><i id="pbar-fill"></i></div>
+ <span class="pbar-span" id="pbar-span">write 0% · 0.0 MB</span>
  <p class="hint" id="phase-note">esptool idle</p>
 </div>
 <div class="box">
@@ -903,6 +931,18 @@ function phaseHit(name,pct){
   const n=$('phase-note');
   if(n) n.textContent='esptool: '+name+(name==='write'&&typeof pct==='number'?` (${pct}%)`:'');
 }
+/* write progress bar (v21.5) */
+let pbarShown=false;
+function pbarHit(pct){
+  const bar=$('pbar'), fill=$('pbar-fill'), span=$('pbar-span');
+  if(!bar||!fill||!span) return;
+  if(!pbarShown){ bar.classList.add('on'); span.classList.add('on'); pbarShown=true; }
+  fill.style.width=Math.min(100,pct)+'%';
+  span.textContent='write '+Math.min(100,pct)+'%';
+  if(pct>=100){ bar.classList.remove('on'); span.classList.remove('on'); pbarShown=false; phaseEls.write.classList.remove('active'); phaseEls.write.classList.add('done'); }
+}
+function pbarHide(){ const bar=$('pbar'), span=$('pbar-span'); if(!bar) return;
+  bar.classList.remove('on'); span.classList.remove('on'); pbarShown=false; }
 function monAdd(dir,ts,text){
   const line=document.createElement('div'); line.className=dir;
   line.textContent=ts+(dir==='rx'?' \\u2191 ':' \\u2193 ')+text;
@@ -926,7 +966,10 @@ function openMon(){
       if(ev.data[0]!=='{') return;
       let m; try{m=JSON.parse(ev.data)}catch(e){return}
       if(m.t==='mon') monAdd(m.dir,m.ts,m.text);
-      else if(m.t==='phase'){ phaseFramesSeen++; phaseHit(m.phase,m.pct); }
+      else if(m.t==='phase'){ phaseFramesSeen++; phaseHit(m.phase,m.pct);
+        if(typeof m.pct==='number'){ pbarHit(m.pct); }
+        else if(m.phase==='write'&&m.pct===null){ pbarHit(0); }
+        else if(m.phase==='verify'||m.phase==='reset'){ pbarHide(); } }
     };
     monSock.onclose=()=>{ setLive(false); setTimeout(openMon,backoff=Math.min(backoff*2,8000)); };
   }catch(e){ setLive(false); setTimeout(openMon,2000); }
