@@ -1063,7 +1063,7 @@ class Relay:
         # rung 23: raw-frame capture ring (toggleable) — replay stock for the
         # phase decoder, no board needed. Entries (ts, dir, hex); bounded.
         self.capture_on = False
-        self.cap = deque(maxlen=4000)
+        self.cap = deque(maxlen=60000)   # sized for a FULL flash (~2.4 MB tx + app rx); hex strings in RAM
         self._mon_flush_scheduled = False
 
     # ---------- browser side ----------
