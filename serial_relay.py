@@ -186,6 +186,10 @@ PAGE = """<!doctype html>
         padding:.25rem .6rem;border-radius:4px;border:1px solid var(--color-line);
         background:transparent;color:var(--color-mute);cursor:pointer;flex-shrink:0}
  .theme-toggle:hover{color:var(--color-text);border-color:var(--color-line-soft)}
+ .hdr-link{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.08em;
+        padding:.25rem .6rem;border:1px solid var(--color-line);border-radius:4px;
+        color:var(--color-mute);text-decoration:none;flex-shrink:0}
+ .hdr-link:hover{color:var(--color-text);border-color:var(--color-line-soft)}
 </style></head><body>
 <div class="brand">
  <span class="mark"></span>
@@ -197,6 +201,7 @@ PAGE = """<!doctype html>
     </span>
  </span>
  <span class="tagline">We Alight the Invisible</span>
+ <a class="hdr-link" href="/dashboard" target="_blank" rel="noopener" title="live mirror + status — opens in a new tab">dashboard ↗</a>
  <button class="theme-toggle" id="theme-toggle" title="toggle light/dark (follows system by default)">◐ system</button>
 </div>
 <hr class="rule">
@@ -788,6 +793,10 @@ DASH_PAGE = """<!doctype html>
         padding:.25rem .6rem;border-radius:4px;border:1px solid var(--color-line);
         background:transparent;color:var(--color-mute);cursor:pointer}
  .theme-toggle:hover{color:var(--color-text);border-color:var(--color-line-soft)}
+ .hdr-link{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.08em;
+        padding:.25rem .6rem;border:1px solid var(--color-line);border-radius:4px;
+        color:var(--color-mute);text-decoration:none}
+ .hdr-link:hover{color:var(--color-text);border-color:var(--color-line-soft)}
 </style></head><body>
 <div class="brand">
  <button class="theme-toggle" id="theme-toggle" title="toggle light/dark (follows system by default)">◐ system</button>
@@ -796,6 +805,7 @@ DASH_PAGE = """<!doctype html>
    <span class="hot">S</span><span class="dim">TUDIO</span><span style="width:.4em;display:inline-block"></span><span class="hot">A</span><span class="dim">LIGHT</span>
  </span>
  <span class="tagline">We Alight the Invisible</span>
+ <a class="hdr-link" href="/" target="_blank" rel="noopener" title="serial relay control — opens in a new tab">relay control ↗</a>
 </div>
 <hr class="rule">
 <div class="statusgrid">
