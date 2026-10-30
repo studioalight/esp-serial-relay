@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v17"
+RELAY_VERSION = "v18"
 
 
 class _RingLog(logging.Handler):
@@ -890,7 +890,10 @@ const phaseOrder=['connect','sync','write','verify','reset'];
 const phaseEls={}; phaseOrder.forEach(p=>phaseEls[p]=$('ph-'+p));
 function phaseHit(name,pct){
   const el=phaseEls[name]; if(!el) return;
-  if(name!=='reset'){ phaseOrder.forEach(p=>{ if(phaseOrder.indexOf(p)<phaseOrder.indexOf(name)){phaseEls[p].classList.remove('active');phaseEls[p].classList.add('done');} }); }
+  if(name==='reset'){ phaseOrder.forEach(p=>{ phaseEls[p].classList.remove('active'); phaseEls[p].classList.add('done'); });
+    const n=$('phase-note'); if(n) n.textContent='esptool: reset (done)'; return; }
+  phaseOrder.forEach(p=>{ if(phaseOrder.indexOf(p)<phaseOrder.indexOf(name)){phaseEls[p].classList.remove('active');phaseEls[p].classList.add('done');} });
+  if(name==='connect' && $('phase-note')) { phaseOrder.forEach(p=>{phaseEls[p].classList.remove('active','done');}); }
   el.classList.add('active');
   const n=$('phase-note');
   if(n) n.textContent='esptool: '+name+(name==='write'&&typeof pct==='number'?` (${pct}%)`:'');
