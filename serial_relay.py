@@ -276,7 +276,7 @@ PAGE = """<!doctype html>
  <div class="box-label">Link log</div>
  <div id="log"></div>
 </div>
-<footer>serial-relay v11 · gateway daemon · <b>Studio Alight</b> 2026 · <a href="/dashboard" style="color:var(--color-mute)">status dashboard</a></footer>
+<footer>serial-relay %%RELAY_VERSION%% · gateway daemon · <b>Studio Alight</b> 2026 · <a href="/dashboard" style="color:var(--color-mute)">status dashboard</a></footer>
 <script>
 const $=id=>document.getElementById(id);
 const log=(m,cls)=>{const d=document.createElement('div');if(cls)d.className=cls;d.textContent=m;$('log').append(d);$('log').scrollTop=$('log').scrollHeight;};
@@ -850,7 +850,7 @@ DASH_PAGE = """<!doctype html>
  <div class="box-label">Daemon log — tail</div>
  <div id="dlog"></div>
 </div>
-<footer>relay status v8 · <b>Studio Alight</b> 2026 · <a href="/">← serial relay control</a></footer>
+<footer>relay status %%RELAY_VERSION%% · <b>Studio Alight</b> 2026 · <a href="/">← serial relay control</a></footer>
 <script>
 const $=id=>document.getElementById(id);
 function fmtDur(s){ if(s==null)return'—'; s=Math.max(0,s|0);
@@ -1445,6 +1445,10 @@ async def http_gate(connection, request):
         return Response(200, "OK", Headers([("Content-Type", "image/png")]), PNG_1PX)
     return None  # /relay and others: fall through to WS handling
 
+
+# version stamp lives in ONE constant; both pages inherit it at import
+PAGE = PAGE.replace("%%RELAY_VERSION%%", RELAY_VERSION)
+DASH_PAGE = DASH_PAGE.replace("%%RELAY_VERSION%%", RELAY_VERSION)
 
 RELAY = None
 relay_state = {}
