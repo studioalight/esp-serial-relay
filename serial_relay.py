@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v16"
+RELAY_VERSION = "v17"
 
 
 class _RingLog(logging.Handler):
@@ -1413,6 +1413,7 @@ async def http_gate(connection, request):
         body = PAGE.encode()
         return Response(200, "OK", Headers([
             ("Content-Type", "text/html; charset=utf-8"),
+            ("Cache-Control", "no-store"),   # FIELD 09:25: the port-holding tab lives across flashes; stale cached JS made every shipped fix invisible
             ("Content-Length", str(len(body))),
         ]), body)
     if request.path == "/healthz":
@@ -1432,6 +1433,7 @@ async def http_gate(connection, request):
         body = DASH_PAGE.encode()
         return Response(200, "OK", Headers([
             ("Content-Type", "text/html; charset=utf-8"),
+            ("Cache-Control", "no-store"),   # FIELD 09:25: the port-holding tab lives across flashes; stale cached JS made every shipped fix invisible
             ("Content-Length", str(len(body))),
         ]), body)
     if request.path == "/capture/on" or request.path == "/capture/off":
