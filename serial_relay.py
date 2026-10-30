@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v15"
+RELAY_VERSION = "v16"
 
 
 class _RingLog(logging.Handler):
@@ -418,7 +418,11 @@ const phaseOrder=['connect','sync','write','verify','reset'];
 const phaseEls={}; phaseOrder.forEach(p=>phaseEls[p]=$('ph-'+p));
 function phaseHit(name){
   const el=phaseEls[name]; if(!el) return;
-  if(name!=='reset'){ phaseOrder.forEach(p=>{ if(phaseOrder.indexOf(p)<phaseOrder.indexOf(name)){phaseEls[p].classList.remove('active');phaseEls[p].classList.add('done');} }); }
+  // 'reset' completes the session: everything before it goes green 'done',
+  // reset goes green too (FIELD 09:10 — it previously stayed red forever).
+  if(name==='reset'){ phaseOrder.forEach(p=>{ phaseEls[p].classList.remove('active'); phaseEls[p].classList.add('done'); }); return; }
+  phaseOrder.forEach(p=>{ if(phaseOrder.indexOf(p)<phaseOrder.indexOf(name)){phaseEls[p].classList.remove('active');phaseEls[p].classList.add('done');} });
+  if(name==='connect') phaseReset();
   el.classList.add('active');
   const note=$('phase-note'); if(note) note.textContent='esptool: '+name+(name==='write'&&arguments[1]!==undefined?` (${arguments[1]}%)`:'');
 }
@@ -645,15 +649,28 @@ def wire_decode_phase(r, data, direction):
     Only the HOST side (tx) drives phases; device acks (rx, resp byte 0x01)
     confirm but the panel derives state from requests alone.
     """
-    # reset derivation: after verify, plain device OUTPUT (boot log) means the
-    # chip reset. Device ACK frames (rx, starts with C0 01) are NOT output —
-    # they arrive instantly after the MD5 command and must not trip it.
     if (direction == "rx" and getattr(r, "phase", None)
             and r.phase.get("phase") == "verify"
             and not (data[:2] == b"\xc0\x01")):
         _set_wire_phase(r, "reset")
         r._phase_scan = bytearray()
+        r._reset_latched = True
+        r._flash_total = None
         return
+    # reset latch: once the device reset (boot text after verify), teardown
+    # frames (DEFL_END, zero-block FLASH_BEGIN) would re-fire 'write' — the
+    # panel would end on 'write' although the flash finished. Ignore all
+    # bootloader chatter after reset; only a NEW session start (SYNC/MEM_BEGIN)
+    # re-arms decoding.
+    if getattr(r, "_reset_latched", False):
+        if data[:3] in (b"\xc0\x00\x08", b"\xc0\x00\x05"):
+            r._reset_latched = False
+        else:
+            b = r._phase_scan
+            b += data
+            if len(b) > 65536:
+                del b[:-24576]
+            return
     b = r._phase_scan
     b += data
     # safety purge only for runaway buffers; must NEVER cut a whole incoming
@@ -681,9 +698,12 @@ def wire_decode_phase(r, data, direction):
         if hit is None:
             i += 2
             continue
-        # plausible length field: len < 0x4000 keeps noise out of app text
+        # plausible length field. FIELD 09:10 (real capture): the ESP32-S3
+        # stub announces 16,400-byte blocks — 16 over the old 0x4000 cap, so
+        # every block was rejected and pct never progressed. Cap raised to
+        # 0x40000 (256 KB) — still excludes garbage, admits real chunks.
         ln = b[i + 3] | (b[i + 4] << 8)
-        if ln > 0x4000:
+        if ln > 0x40000:
             i += 2
             continue
         phase, kind = hit
@@ -715,8 +735,16 @@ def wire_decode_phase(r, data, direction):
                 r.phase_src = "wire"
                 r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": pct})
         elif kind in ("end", "end-defl"):
+            # transfer complete: register 100% — the declared total
+            # (num_blocks×write_size) over-rounds, so the floor of the last
+            # real block lands at 99 (capture 09:10 proved it). ONE frame:
+            # write@100 IS the end state (verify follows immediately; a
+            # second _set_wire_phase would overwrite the pending frame).
+            if r._flash_total:
+                r.phase = {"phase": "write", "pct": 100}
+                r.phase_src = "wire"
+                r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": 100})
             r._flash_total = None
-            _set_wire_phase(r, "write", "end")
         elif phase == "connect":
             _set_wire_phase(r, "connect")
         elif phase == "sync":
@@ -1058,6 +1086,7 @@ class Relay:
         self._flash_done = 0     # cumulative bytes announced by FLASH_DATA blocks
         self._phase_scan = bytearray()   # sliding window for the wire phase decoder
         self._wire_phase_frame = None    # pending phase frame to broadcast on flush
+        self._reset_latched = False      # teardown frames after reset are noise
         self._decode_q = asyncio.Queue(maxsize=512)  # pump -> decoder task handoff
         self._decode_drops = 0
         # rung 23: raw-frame capture ring (toggleable) — replay stock for the
