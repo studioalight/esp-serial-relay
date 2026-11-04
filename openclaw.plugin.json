@@ -14,8 +14,34 @@
   ],
   "configSchema": {
     "type": "object",
-    "properties": {},
-    "additionalProperties": false
+    "properties": {
+      "rfcPort": {
+        "type": "integer",
+        "description": "RFC2217 port esptool connects to (rfc2217://…:PORT). Default 4001.",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 4001
+      },
+      "wsPort": {
+        "type": "integer",
+        "description": "Web/WS port for the relay GUI + dashboard. Default 4002.",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 4002
+      },
+      "rfcBind": {
+        "type": "string",
+        "description": "RFC2217 bind address. Default 127.0.0.1 (loopback) — widening it exposes the flash port to the network.",
+        "default": "127.0.0.1"
+      },
+      "browserWait": {
+        "type": "integer",
+        "description": "Seconds the daemon waits for the serial tab to (re)connect before dropping flash payload. Default 30.",
+        "minimum": 1,
+        "maximum": 600,
+        "default": 30
+      }
+    }
   },
   "contracts": {
     "tools": [

@@ -82,13 +82,51 @@ export default defineToolPlugin({
   name: "ESP Serial Relay",
   description:
     "Install, inspect, and remove the ESP serial relay bridge (browser WebSerial → RFC2217 :4001 for esptool, dashboard :4002, tailscale serve :8444).",
+  // v25: settings live in the OpenClaw web GUI (Control UI renders this schema
+  // under plugins.entries.esp-serial-relay.config); the install tool forwards
+  // them to the installer → LaunchAgent EnvironmentVariables → daemon boot.
+  configSchema: Type.Object({
+    rfcPort: Type.Optional(
+      Type.Integer({
+        description: "RFC2217 port esptool connects to (rfc2217://…:PORT). Default 4001.",
+        minimum: 1,
+        maximum: 65535,
+        default: 4001,
+      }),
+    ),
+    wsPort: Type.Optional(
+      Type.Integer({
+        description: "Web/WS port for the relay GUI + dashboard. Default 4002.",
+        minimum: 1,
+        maximum: 65535,
+        default: 4002,
+      }),
+    ),
+    rfcBind: Type.Optional(
+      Type.String({
+        description:
+          "RFC2217 bind address. Default 127.0.0.1 (loopback) — widening it exposes the flash port to the network.",
+        default: "127.0.0.1",
+      }),
+    ),
+    browserWait: Type.Optional(
+      Type.Integer({
+        description:
+          "Seconds the daemon waits for the serial tab to (re)connect before dropping flash payload. Default 30.",
+        minimum: 1,
+        maximum: 600,
+        default: 30,
+      }),
+    ),
+  }),
   tools: (tool) => [
     tool({
       name: "esp_relay_status",
       description:
         "Report the ESP serial relay state on this machine: relay listeners (4001 RFC2217 / 4002 dashboard), tailscale serve route (8444), installer presence.",
       parameters: Type.Object({}),
-      execute: async () => {
+      execute: async (_params, cfgRaw) => {
+        const cfg = (cfgRaw ?? {}) as Record<string, unknown>;
         const s = await gatherStatus();
         return {
           content: [
@@ -99,6 +137,7 @@ export default defineToolPlugin({
                 `listeners: ${s.listeners}`,
                 `serveRoute: ${s.serveRoute ?? "none"}`,
                 `installerPresent: ${s.installerPresent}`,
+                `config: rfcPort=${cfg.rfcPort ?? "default(4001)"} wsPort=${cfg.wsPort ?? "default(4002)"} rfcBind=${cfg.rfcBind ?? "default(127.0.0.1)"} browserWait=${cfg.browserWait ?? "default(30)"}`,
               ].join("\n"),
             },
           ],
@@ -117,8 +156,19 @@ export default defineToolPlugin({
           Type.Boolean({ description: "Walk through without changing anything." }),
         ),
       }),
-      execute: async ({ skipServe, dryRun }) => {
+      execute: async ({ skipServe, dryRun }, cfgRaw) => {
+        const cfg = (cfgRaw ?? {}) as Record<string, unknown>;
         const args = [installerPath()];
+        // v25: configured knobs flow to the installer → LaunchAgent → daemon
+        const knobs: Array<[string, string | number]> = [
+          ["--rfc-port", cfg.rfcPort as string | number],
+          ["--ws-port", cfg.wsPort as string | number],
+          ["--rfc-bind", cfg.rfcBind as string],
+          ["--browser-wait", cfg.browserWait as string | number],
+        ];
+        for (const [flag, val] of knobs) {
+          if (val !== undefined && val !== null) args.push(flag, String(val));
+        }
         if (skipServe) args.push("--skip-serve");
         if (dryRun) args.push("--dry-run");
         const out = await pyRun(args);

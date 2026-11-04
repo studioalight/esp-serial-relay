@@ -82,6 +82,13 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-serve", action="store_true")
     ap.add_argument("--uid", type=int, default=os.getuid())
+    # v25: settings set in the OpenClaw web GUI (Control UI) ride these flags;
+    # they land in the LaunchAgent's EnvironmentVariables and the daemon reads
+    # them at boot. Unset = daemon/plugin defaults apply.
+    ap.add_argument("--rfc-port", type=int)
+    ap.add_argument("--ws-port", type=int)
+    ap.add_argument("--rfc-bind")
+    ap.add_argument("--browser-wait", type=float)
     args = ap.parse_args()
     dry = args.dry_run
     gui_uid = args.uid
@@ -121,7 +128,13 @@ def main():
         "ThrottleInterval": 5,
         "StandardOutPath": log_out,
         "StandardErrorPath": log_err,
-        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
+        "EnvironmentVariables": {
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            **({"ESP_RELAY_RFC_PORT": str(args.rfc_port)} if args.rfc_port else {}),
+            **({"ESP_RELAY_WS_PORT": str(args.ws_port)} if args.ws_port else {}),
+            **({"ESP_RELAY_RFC_BIND": args.rfc_bind} if args.rfc_bind else {}),
+            **({"ESP_RELAY_BROWSER_WAIT": str(args.browser_wait)} if args.browser_wait else {}),
+        },
     }
     if not dry:
         os.makedirs(os.path.dirname(plist_path), exist_ok=True)
