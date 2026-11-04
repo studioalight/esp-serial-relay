@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v23"
+RELAY_VERSION = "v24"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -86,7 +86,54 @@ def _env(name, default):
 RFC_PORT = int(_env("ESP_RELAY_RFC_PORT", "4001"))
 WS_PORT = int(_env("ESP_RELAY_WS_PORT", "4002"))
 RFC_BIND = _env("ESP_RELAY_RFC_BIND", "127.0.0.1")
-BROWSER_WAIT_S = float(_env("ESP_RELAY_BROWSER_WAIT", "30"))
+BROWSER_WAIT_S = float(_env("ESP_RELAY_BROWSER_WAIT", "30"))  # v24: FINALLY WIRED (was defined-but-unused since v8)
+
+# ---- settings (v24): web-editable, file-persisted; precedence file > env > default ----
+# The plugin's own GUI hosts the settings page (the daemon IS the config
+# consumer); writes arrive as JSON frames on the /console WS, guarded by a
+# per-boot token baked into the served page (kills blind cross-tab writes
+# without any login friction). Port/bind changes persist to the file and
+# self-restart the LaunchAgent via `launchctl kickstart` — boot re-reads it.
+SETTINGS_PATH = os.path.expanduser("~/.openclaw/serial-relay-settings.json")
+SETTINGS_KNOBS = ("rfcPort", "wsPort", "rfcBind", "browserWait")
+SETTINGS_TOKEN = os.urandom(16).hex()   # per-boot; baked into /settings HTML, required on save
+
+def load_settings():
+    """Read persisted overrides; tolerate junk (missing/corrupt = no overrides)."""
+    try:
+        with open(SETTINGS_PATH) as f:
+            d = json.load(f)
+        return {k: d[k] for k in SETTINGS_KNOBS if k in d}
+    except Exception:
+        return {}
+
+def apply_settings(ov):
+    """Apply an override dict onto the live knobs (module globals)."""
+    global RFC_PORT, WS_PORT, RFC_BIND, BROWSER_WAIT_S
+    applied = []
+    try:
+        if "rfcPort" in ov:
+            v = int(ov["rfcPort"]); assert 1 <= v <= 65535
+            RFC_PORT = v; applied.append("rfcPort")
+        if "wsPort" in ov:
+            v = int(ov["wsPort"]); assert 1 <= v <= 65535
+            WS_PORT = v; applied.append("wsPort")
+        if "rfcBind" in ov:
+            v = str(ov["rfcBind"]).strip()
+            parts = v.split(".")
+            assert (len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)) \
+                or v == "::1", "bind must be an IPv4 dotted-quad or ::1"
+            RFC_BIND = v; applied.append("rfcBind")
+        if "browserWait" in ov:
+            v = float(ov["browserWait"]); assert 0 < v < 600
+            BROWSER_WAIT_S = v; applied.append("browserWait")   # hot-applies
+    except Exception:
+        raise ValueError("bad settings value in " + ",".join(applied or ["request"]))
+    return applied
+
+_applied = apply_settings(load_settings())
+if _applied:
+    log.info("settings applied from %s: %s", SETTINGS_PATH, ",".join(_applied))
 
 LOOP = None  # main asyncio loop, captured at startup (thread-safe handoffs)
 
@@ -225,6 +272,7 @@ PAGE = """<!doctype html>
  </span>
  <span class="tagline">We Alight the Invisible</span>
  <a class="hdr-link" href="/dashboard" target="_blank" rel="noopener" title="live mirror + status — opens in a new tab">dashboard ↗</a>
+ <a class="hdr-link" href="/settings" target="_blank" rel="noopener" title="ports, bind, browser-wait — opens in a new tab">settings ↗</a>
  <button class="theme-toggle" id="theme-toggle" title="toggle light/dark (follows system by default)">◐ system</button>
 </div>
 <hr class="rule">
@@ -892,6 +940,7 @@ DASH_PAGE = """<!doctype html>
  </span>
  <span class="tagline">We Alight the Invisible</span>
  <a class="hdr-link" href="/" target="_blank" rel="noopener" title="serial relay control — opens in a new tab">relay control ↗</a>
+ <a class="hdr-link" href="/settings" target="_blank" rel="noopener" title="ports, bind, browser-wait — opens in a new tab">settings ↗</a>
 </div>
 <hr class="rule">
 <div class="statusgrid">
@@ -1179,14 +1228,26 @@ class Relay:
             try:
                 async for msg in connection:
                     if isinstance(msg, str):
+                        cfg_ok = None
                         if msg[:1] == "{":
                             try:
                                 m = json.loads(msg)
                                 if m.get("t") == "phase":
                                     self.phase = {"phase": m.get("phase"),
                                                   "pct": m.get("pct")}
+                                elif m.get("t") == "cfg":
+                                    # v24: settings save (token-guarded) —
+                                    # handled here, never forwarded to other tabs
+                                    cfg_ok = await self._handle_settings(m)
+                            except Exception as e:
+                                log.warning("console json: %s", e)
+                        if cfg_ok is not None:
+                            try:
+                                await connection.send(json.dumps(
+                                    {"t": "cfg-ack", "ok": cfg_ok[0], "note": cfg_ok[1]}))
                             except Exception:
                                 pass
+                            continue   # settings frames stay private to the sender
                         dead = []
                         for c in list(self.consoles):
                             if c is connection:
@@ -1368,6 +1429,46 @@ class Relay:
             except Exception:
                 pass  # strictly observational: a decoder bug must not kill the task
 
+    async def _handle_settings(self, m):
+        """v24: apply + persist web settings; restart the launchd label for
+        port/bind changes (boot re-reads the file). Returns (ok, note)."""
+        if m.get("token") != SETTINGS_TOKEN:
+            return (False, "bad token — reload the settings page")
+        req = m.get("settings") or {}
+        try:
+            applied = apply_settings(req)
+        except ValueError as e:
+            return (False, str(e))
+        try:
+            json.dump({**load_settings(), **{k: req[k] for k in applied}},
+                      open(SETTINGS_PATH, "w"), indent=1)
+        except Exception as e:
+            return (False, f"persist failed: {e}")
+        note = "applied: " + ",".join(applied) if applied else "nothing to apply"
+        needs_restart = any(k in req for k in ("rfcPort", "wsPort", "rfcBind")) and applied
+        if needs_restart:
+            note += " — restarting service"
+            LOOP.call_soon_threadsafe(self._self_restart)
+        return (True, note)
+
+    def _self_restart(self):
+        """launchctl kickstart for the daemon's own label; no-op when not under launchd."""
+        import subprocess
+        labels = [os.environ.get("ESP_RELAY_LAUNCHD_LABEL", ""),
+                  "app.clawkie.serial-relay",   # both live shores still run this
+                  "app.esp-serial-relay"]       # the installer's current label
+        uid = os.getuid()
+        for lb in labels:
+            if not lb:
+                continue
+            r = subprocess.run(["/bin/launchctl", "kickstart", "-k",
+                                f"gui/{uid}/{lb}"],
+                               capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                log.info("self-restart: kicked %s", lb)
+                return
+        log.warning("self-restart: no launchd label matched (manual restart needed)")
+
     def status_snapshot(self):
         now = time.time()
         return {
@@ -1443,6 +1544,16 @@ class Relay:
                     # decoder reads phases from host requests. Without this
                     # tap, tx stays 0 during a flash (field 08:28).
                     self.monitor_tap(bytes(batch), "tx")
+                    if not self.browser_ready.is_set():
+                        # v24: BROWSER_WAIT_S finally consumed (was a phantom
+                        # knob since v8). Give the serial tab the configured
+                        # grace to (re)connect before dropping the payload —
+                        # flash sessions no longer die on a race with Connect.
+                        try:
+                            await asyncio.wait_for(
+                                self.browser_ready.wait(), timeout=BROWSER_WAIT_S)
+                        except asyncio.TimeoutError:
+                            pass
                     if self.browser_ready.is_set():
                         await self._ws_send(bytes(batch))
                     # else: payload dropped when no browser link (USB is
@@ -1530,6 +1641,21 @@ async def http_gate(connection, request):
         if r is not None:
             r.cap.clear()
         return Response(200, "OK", Headers([("Content-Type", "text/plain")]), b"cleared")
+    if request.path == "/settings":
+        body = SETTINGS_PAGE.replace("%%TOKEN%%", SETTINGS_TOKEN).encode()
+        return Response(200, "OK", Headers([
+            ("Content-Type", "text/html; charset=utf-8"),
+            ("Cache-Control", "no-store"),
+        ]), body)
+    if request.path == "/settings.json":
+        r = relay_state.get("relay")
+        snap = ({"ok": r.status_snapshot()["ok"]} if r else {"ok": False})
+        eff = {"rfcPort": RFC_PORT, "wsPort": WS_PORT, "rfcBind": RFC_BIND,
+               "browserWait": BROWSER_WAIT_S, "source": "live",
+               "overrides": list(load_settings().keys()), "version": RELAY_VERSION}
+        eff.update(snap)
+        body = json.dumps(eff).encode()
+        return Response(200, "OK", Headers([("Content-Type", "application/json")]), body)
     if request.path == "/status.json":
         r = relay_state.get("relay")
         snap = r.status_snapshot() if r is not None else {"ok": False}
@@ -1554,6 +1680,91 @@ async def http_gate(connection, request):
 # version stamp lives in ONE constant; both pages inherit it at import
 PAGE = PAGE.replace("%%RELAY_VERSION%%", RELAY_VERSION)
 DASH_PAGE = DASH_PAGE.replace("%%RELAY_VERSION%%", RELAY_VERSION)
+
+SETTINGS_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studio Alight — Relay Settings</title>
+<meta name="color-scheme" content="dark light">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<style>
+ body{font-family:var(--font-display);max-width:760px;margin:0 auto;padding:3rem 1rem 4rem;
+       background:var(--color-bg);color:var(--color-text);line-height:1.6;min-height:100vh}
+ .brand{display:flex;align-items:baseline;gap:.8rem;flex-wrap:wrap}
+ .knob{display:grid;grid-template-columns:1fr;gap:1rem;margin:1.4rem 0}
+ .fld{display:grid;grid-template-columns:11rem 1fr;gap:1rem;align-items:center}
+ .fld label{font-family:var(--font-mono);font-size:.7rem;color:var(--color-mute);letter-spacing:.08em}
+ .fld input{font-family:var(--font-mono);font-size:.85rem;background:var(--color-panel);color:var(--color-text);
+       border:1px solid var(--color-line);border-radius:4px;padding:.4rem .6rem;width:100%}
+ .fld input:focus{outline:none;border-color:var(--color-accent)}
+ .note{font-family:var(--font-mono);font-size:.66rem;color:var(--color-mute);margin-top:.3rem}
+ #msg{font-family:var(--font-mono);font-size:.72rem;margin:.8rem 0;min-height:1.2em;color:var(--color-mute)}
+ #msg.ok{color:var(--color-ok)} #msg.bad{color:var(--color-bad)}
+ .save{font-family:var(--font-mono);font-size:.8rem;color:var(--color-card,#111);background:var(--color-accent);
+       border:0;border-radius:8px;padding:.5rem 1rem;cursor:pointer;font-weight:600}
+ .save:hover{filter:brightness(1.12)}
+ .st{font-family:var(--font-mono);font-size:.72rem;color:var(--color-mute);line-height:1.7}
+ .st b{color:var(--color-text);font-weight:500}
+</style></head><body>
+<div class="brand">
+ <span class="mark"></span>
+ <span class="tagline">Relay Settings</span>
+ <span class="ver-chip" id="ver" style="font-family:var(--font-mono);font-size:.62rem;color:var(--color-mute)"></span>
+</div>
+<hr class="rule">
+<div class="knob">
+ <div class="fld"><label>rfc2217 port</label><div><input id="rfcPort" type="number" min="1" max="65535">
+   <div class="note">esptool connects here (rfc2217://…:PORT) · change restarts the daemon</div></div></div>
+ <div class="fld"><label>web/ws port</label><div><input id="wsPort" type="number" min="1" max="65535">
+   <div class="note">this GUI + dashboard + WS · change restarts the daemon</div></div></div>
+ <div class="fld"><label>rfc2217 bind</label><div><input id="rfcBind" type="text">
+   <div class="note">loopback 127.0.0.1 is the safe default — binding wider exposes the flash port to your network</div></div></div>
+ <div class="fld"><label>browser wait s</label><div><input id="browserWait" type="number" min="1" max="600" step="1">
+   <div class="note">grace for the serial tab to (re)connect before a flash payload drops · applies live</div></div></div>
+</div>
+<button class="save" id="save">save settings</button>
+<div id="msg"></div>
+<hr class="rule">
+<div class="st" id="st">loading status…</div>
+<script>
+const TOKEN="%%TOKEN%%";
+const $=id=>document.getElementById(id);
+fetch('/settings.json',{cache:'no-store'}).then(r=>r.json()).then(s=>{
+  $('rfcPort').value=s.rfcPort; $('wsPort').value=s.wsPort;
+  $('rfcBind').value=s.rfcBind; $('browserWait').value=s.browserWait;
+  $('ver').textContent='daemon '+s.version;
+  document.documentElement.dataset.settingsSource=s.source||'defaults';
+}).catch(()=>{ $('msg').textContent='could not load settings'; $('msg').className='bad'; });
+function st(){
+  fetch('/status.json',{cache:'no-store'}).then(r=>r.json()).then(d=>{
+    $('st').innerHTML='daemon <b>'+d.version+'</b> · serial link <b>'+(d.serial_link?'up':'down')+
+      '</b> · rfc2217 <b>'+d.rfc2217+'</b> · listeners <b>'+d.console_listeners+
+      '</b><br>tx '+(d.counts?d.counts.tx:0)+' B · rx '+(d.counts?d.counts.rx:0)+
+      ' B · esptool <b>'+((d.esptool_phase&&d.esptool_phase.phase)||'idle')+'</b>';
+  }).catch(()=>{ $('st').textContent='status unavailable'; });
+}
+st(); setInterval(st,4000);
+function send(){
+  const body={ t:'cfg', token:TOKEN, settings:{
+    rfcPort:$('rfcPort').value, wsPort:$('wsPort').value,
+    rfcBind:$('rfcBind').value, browserWait:$('browserWait').value } };
+  const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/console');
+  const msg=$('msg');
+  ws.onopen=()=>ws.send(JSON.stringify(body));
+  ws.onmessage=ev=>{ if(ev.data[0]!=='{')return;
+    let m; try{m=JSON.parse(ev.data)}catch(e){return}
+    if(m.t==='cfg-ack'){ msg.textContent=m.ok?('saved — '+m.note):('rejected — '+m.note);
+      msg.className=m.ok?'ok':'bad'; ws.close(); } };
+  ws.onclose=()=>{ if(msg.textContent==='') msg.textContent='connection closed without ack'; };
+  setTimeout(()=>{ if(ws.readyState===1) return; ws.close(); },3000);
+}
+$('save').onclick=send;
+</script>
+</body></html>"""
+
 
 RELAY = None
 relay_state = {}
