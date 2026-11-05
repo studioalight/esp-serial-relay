@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v27"
+RELAY_VERSION = "v28"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1397,13 +1397,13 @@ class Relay:
                             self.device_links[did] = connection
                             self.device_by_ws[connection] = did
                             self.device_ports[did] = rec["rfcPort"]
-                            st = self.device_state.setdefault(did, {
-                                "ready": asyncio.Event(), "phase": None,
-                                "phase_src": None, "scan": bytearray(),
-                                "total": None, "done": 0,
-                                "counts": {"rx": 0, "tx": 0},
-                            })
-                            st["ready"].set()
+                            st = self.device_state.get(did)
+                            if st is None:
+                                st = _DeviceView()
+                                self.device_state[did] = st
+                            if st.ready is None:
+                                st.ready = asyncio.Event()
+                            st.ready.set()
                             await self._ensure_device_server(did, rec["rfcPort"])
                             log.info("device bound: %s -> rfc2217:%d (label=%s)",
                                      did, rec["rfcPort"], rec.get("label"))
@@ -1480,8 +1480,33 @@ class Relay:
 
     # ---------- status dashboard / live mirror ----------
 
-    def monitor_tap(self, data, direction):
+class _DeviceView:
+    """v28: per-device decode state. Attributes mirror what wire_decode_phase
+    expects on a Relay, so the decoder is unchanged."""
+    def __init__(self):
+        self.phase = None
+        self.phase_src = None
+        self._phase_scan = bytearray()
+        self._flash_total = None
+        self._flash_done = 0
+        self._reset_latched = False
+        self._wire_phase_frame = None
+        self.ready = None
+        self.cap = None
+        self.counts = {"rx": 0, "tx": 0}
+        self.last_activity = None
+
+    def monitor_tap(self, data, direction, did=None):
         """Every byte that crosses the relay, either way, feeds the mirror."""
+        if did and did != "default":
+            view = self.device_state.get(did)
+            if view is None:
+                view = _DeviceView()
+                self.device_state[did] = view
+            view.counts[direction] = view.counts.get(direction, 0) + len(data)
+            view.last_activity = time.time()
+            wire_decode_phase(view, data, direction)
+            return
         self.counts[direction] = self.counts.get(direction, 0) + len(data)
         self.last_activity = time.time()
         if self.capture_on:
@@ -1737,7 +1762,7 @@ class Relay:
                     # decoder reads phases from host requests. Without this
                     # tap, tx stays 0 during a flash (field 08:28).
                     self.monitor_tap(bytes(batch), "tx")
-                    ready = self.device_state.get(did, {}).get("ready") if did != "default" else None
+                    ready = getattr(self.device_state.get(did), "ready", None) if did != "default" else None
                     if ready is not None and not ready.is_set():
                         # v24: BROWSER_WAIT_S finally consumed (was a phantom
                         # knob since v8). Give the serial tab the configured
