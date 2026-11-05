@@ -673,7 +673,13 @@ async function connect(){
     if(ws && ws.readyState===1){ ws.close(); ws=null; }
     ws=new WebSocket(wsUrl); ws.binaryType='arraybuffer';
     ws.onopen=()=>{ log('relay daemon linked ('+baud+')','ok');
-      ws.send(JSON.stringify({t:'hello',baud})); setStateEx('link up','up'); };
+      // v26: hello carries the USB identity so the relay binds this tab to a
+      // device in the registry (vid/pid/serialNumber from Web Serial getInfo).
+      let devInfo=null;
+      try{ const i=port.getInfo();
+        devInfo={vendorId:i.usbVendorId, productId:i.usbProductId,
+                 serialNumber:i.serialNumber||null}; }catch(e){}
+      ws.send(JSON.stringify({t:'hello',baud, device:devInfo})); setStateEx('link up','up'); };
     ws.onmessage=async ev=>{
       if(typeof ev.data==='string'){
         let m=null; try{ m=JSON.parse(ev.data); }catch(e){ return; }
