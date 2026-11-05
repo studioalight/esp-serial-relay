@@ -44,5 +44,10 @@
       "openclawVersion": "2026.10.10"
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "description": "Flash and monitor ESP boards from any tailnet machine — one browser tab holds the serial line over RFC2217, with a live phase panel, write progress, and capture/replay. No extra software on the desk.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/studioalight/esp-serial-relay"
+  }
 }

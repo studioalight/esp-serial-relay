@@ -81,7 +81,7 @@ export default defineToolPlugin({
   id: "esp-serial-relay",
   name: "ESP Serial Relay",
   description:
-    "Install, inspect, and remove the ESP serial relay bridge (browser WebSerial → RFC2217 :4001 for esptool, dashboard :4002, tailscale serve :8444).",
+    "Flash and monitor ESP boards from any tailnet machine — one browser tab holds the serial line over RFC2217, with a live phase panel, write progress, and capture/replay. No extra software on the desk.",
   // v25: settings live in the OpenClaw web GUI (Control UI renders this schema
   // under plugins.entries.esp-serial-relay.config); the install tool forwards
   // them to the installer → LaunchAgent EnvironmentVariables → daemon boot.
