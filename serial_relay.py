@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v26"
+RELAY_VERSION = "v27"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1651,6 +1651,11 @@ class Relay:
         """v26: one RFC2217 server per assigned device port (persisted)."""
         if rfc_port in self.device_servers:
             return
+        if rfc_port == RFC_PORT:
+            # the legacy default server on RFC_PORT is already listening —
+            # rebinding it kills the link (field 17:09: Errno 48). Default
+            # device traffic flows through rfc2217_client as before.
+            return
         async def handler(reader, writer, _did=did, _port=rfc_port):
             await self._device_rfc2217_client(_did, reader, writer)
         self.device_servers[rfc_port] = await asyncio.start_server(
@@ -1668,7 +1673,7 @@ class Relay:
             except Exception:
                 pass
             return
-        await self.rfc2217_client_for_device(did, reader, writer)
+        await self.rfc2217_client(reader, writer, did=did)
 
     async def rfc2217_client(self, reader, writer, did="default"):
         """Fully in-loop: asyncio reader/writer, no raw-socket thread.
@@ -1834,15 +1839,18 @@ async def http_gate(connection, request):
             r.cap.clear()
         return Response(200, "OK", Headers([("Content-Type", "text/plain")]), b"cleared")
     if request.path == "/devices.json":
+        r = relay_state.get("relay")
+        dstate = getattr(r, "device_state", {}) if r else {}
+        dlinks = getattr(r, "device_links", {}) if r else {}
         rows = []
         for rec in registry_list():
             did = rec["id"]
-            st = self.device_state.get(did, {})
+            st = dstate.get(did)
             rows.append({
                 **rec,
-                "link": "up" if did in self.device_links else "down",
-                "phase": st.get("phase"),
-                "counts": st.get("counts", {"rx": 0, "tx": 0}),
+                "link": "up" if did in dlinks else "down",
+                "phase": getattr(st, "phase", None),
+                "counts": getattr(st, "counts", {"rx": 0, "tx": 0}),
             })
         return Response(200, "OK", Headers([("Content-Type", "application/json")]),
                         json.dumps({"devices": rows}).encode())
