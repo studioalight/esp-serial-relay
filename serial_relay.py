@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v28"
+RELAY_VERSION = "v29"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1278,6 +1278,23 @@ class _SockConn:
             log.warning("rfc2217 write failed: %s", e)
 
 
+class _DeviceView:
+    """v28: per-device decode state. Attributes mirror what wire_decode_phase
+    expects on a Relay, so the decoder is unchanged."""
+    def __init__(self):
+        self.phase = None
+        self.phase_src = None
+        self._phase_scan = bytearray()
+        self._flash_total = None
+        self._flash_done = 0
+        self._reset_latched = False
+        self._wire_phase_frame = None
+        self.ready = None
+        self.cap = None
+        self.counts = {"rx": 0, "tx": 0}
+        self.last_activity = None
+
+
 class Relay:
     def __init__(self):
         self.ws = None              # browser websocket (serial link)
@@ -1479,22 +1496,6 @@ class Relay:
                 self.ws = None
 
     # ---------- status dashboard / live mirror ----------
-
-class _DeviceView:
-    """v28: per-device decode state. Attributes mirror what wire_decode_phase
-    expects on a Relay, so the decoder is unchanged."""
-    def __init__(self):
-        self.phase = None
-        self.phase_src = None
-        self._phase_scan = bytearray()
-        self._flash_total = None
-        self._flash_done = 0
-        self._reset_latched = False
-        self._wire_phase_frame = None
-        self.ready = None
-        self.cap = None
-        self.counts = {"rx": 0, "tx": 0}
-        self.last_activity = None
 
     def monitor_tap(self, data, direction, did=None):
         """Every byte that crosses the relay, either way, feeds the mirror."""
