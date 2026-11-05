@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v25"
+RELAY_VERSION = "v26"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -132,6 +132,88 @@ def apply_settings(ov):
     return applied
 
 _applied = apply_settings(load_settings())
+
+# ---- device registry (v26): persistent per-board records + editable labels ----
+# Each board gets a stable id + assigned RFC2217 port at first sight; the record
+# survives restarts/unplug/replug. Descriptive names are editable in /devices
+# and persist too. Sessions (agents) resolve a board to its port via /devices.json
+# instead of guessing — the board owns the port, not the session.
+DEVICES_PATH = os.path.expanduser("~/.openclaw/serial-relay-devices.json")
+_RFC_BASE = 4001
+
+def _load_devices():
+    try:
+        with open(DEVICES_PATH) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _save_devices(d):
+    json.dump(d, open(DEVICES_PATH, "w"), indent=1)
+
+def _next_rfc_port(d):
+    used = {int(rec.get("rfcPort", 0)) for rec in d.values()}
+    p = _RFC_BASE
+    while p in used:
+        p += 2
+    return p
+
+def registry_upsert(info):
+    """Get-or-create a device record from a Web Serial hello's info dict.
+    Returns (id, record). Identity: serialNumber if present, else vid/pid + a
+    short label (persisted, so identical boards stay stable across replug).
+    """
+    d = _load_devices()
+    serial = (info.get("serialNumber") or "").strip()
+    vid = info.get("vendorId"); pid = info.get("productId")
+    if serial:
+        did = serial
+    else:
+        did = f"vid{vid:04x}-pid{pid:04x}" if vid and pid else "anon"
+        # stable per-board disambiguation if several share vid/pid
+        if did in d and info.get("label") and d[did].get("label") != info.get("label"):
+            # same vid/pid, different human label => distinct device
+            n = 2
+            while f"{did}-{n}" in d:
+                n += 1
+            did = f"{did}-{n}"
+    rec = d.get(did)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if rec is None:
+        rec = {"id": did, "rfcPort": _next_rfc_port(d), "firstSeen": now,
+               "label": info.get("label") or did,
+               "vendorId": vid, "productId": pid, "serialNumber": serial or None}
+        d[did] = rec
+    rec["lastSeen"] = now
+    if info.get("label"):
+        rec["label"] = info["label"]
+    _save_devices(d)
+    return did, rec
+
+def registry_rename(did, label=None, rfc_port=None):
+    d = _load_devices()
+    rec = d.get(did)
+    if rec is None:
+        return False
+    if label is not None and str(label).strip():
+        rec["label"] = str(label).strip()
+    if rfc_port is not None:
+        v = int(rfc_port)
+        if not (1 <= v <= 65535):
+            raise ValueError("rfcPort out of range")
+        for other_id, other in d.items():
+            if other_id != did and int(other.get("rfcPort", 0)) == v:
+                raise ValueError(f"rfcPort {v} already assigned to {other_id}")
+        rec["rfcPort"] = v
+    rec["lastSeen"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _save_devices(d)
+    return True
+
+def registry_list():
+    d = _load_devices()
+    return sorted(d.values(), key=lambda r: r.get("rfcPort", 0))
+
 if _applied:
     log.info("settings applied from %s: %s", SETTINGS_PATH, ",".join(_applied))
 
@@ -273,6 +355,7 @@ PAGE = """<!doctype html>
  <span class="tagline">We Alight the Invisible</span>
  <a class="hdr-link" href="/dashboard" target="_blank" rel="noopener" title="live mirror + status — opens in a new tab">dashboard ↗</a>
  <a class="hdr-link" href="/settings" target="_blank" rel="noopener" title="ports, bind, browser-wait — opens in a new tab">settings ↗</a>
+ <a class="hdr-link" href="/devices" target="_blank" rel="noopener" title="device registry + assigned ports — opens in a new tab">devices ↗</a>
  <button class="theme-toggle" id="theme-toggle" title="toggle light/dark (follows system by default)">◐ system</button>
 </div>
 <hr class="rule">
@@ -941,6 +1024,7 @@ DASH_PAGE = """<!doctype html>
  <span class="tagline">We Alight the Invisible</span>
  <a class="hdr-link" href="/" target="_blank" rel="noopener" title="serial relay control — opens in a new tab">relay control ↗</a>
  <a class="hdr-link" href="/settings" target="_blank" rel="noopener" title="ports, bind, browser-wait — opens in a new tab">settings ↗</a>
+ <a class="hdr-link" href="/devices" target="_blank" rel="noopener" title="device registry + assigned ports — opens in a new tab">devices ↗</a>
 </div>
 <hr class="rule">
 <div class="statusgrid">
@@ -1097,8 +1181,9 @@ poll(); setInterval(poll,2000); openMon();
 class WebSerialBridge:
     """The 'serial' object PortManager drives; routed over the browser WS."""
 
-    def __init__(self, relay):
+    def __init__(self, relay, did="default"):
         self.relay = relay
+        self._did = did
         self._baud = 115200
         self.bytesize = 8
         self.parity = 'N'
@@ -1191,6 +1276,15 @@ class Relay:
     def __init__(self):
         self.ws = None              # browser websocket (serial link)
         self.consoles = set()        # ALL console listeners (broadcast)
+        # v26: per-device sessions (registry-backed). Legacy self.ws stays as
+        # the DEFAULT device's link for backward compat; additional devices
+        # get their own ws/pm/phase state.
+        self.device_links = {}      # deviceId -> websocket (per-tab link)
+        self.device_by_ws = {}      # websocket -> deviceId (rx tagging)
+        self.device_state = {}      # deviceId -> {"ready":Event, "phase":..., "pct":..., "src":..., "scan":bytearray(), "total":int|None, "done":int, "counts":{"rx":int,"tx":int}}
+        self.device_ports = {}      # deviceId -> assigned rfcPort (from registry)
+        self.device_pms = {}        # deviceId -> (pm, writer)
+        self.device_servers = {}    # rfcPort -> asyncio.Server
         self.pm = None              # active PortManager (one esptool client)
         self.pm_writer = None        # its stream writer
         self.browser_ready = asyncio.Event()
@@ -1235,6 +1329,9 @@ class Relay:
                                 if m.get("t") == "phase":
                                     self.phase = {"phase": m.get("phase"),
                                                   "pct": m.get("pct")}
+                                elif m.get("t") == "dev-rename":
+                                    # v26: registry rename/port reassign, token-guarded
+                                    cfg_ok = self._handle_dev_rename(m)
                                 elif m.get("t") == "cfg":
                                     # v24: settings save (token-guarded) —
                                     # handled here, never forwarded to other tabs
@@ -1265,6 +1362,10 @@ class Relay:
                 log.info("console link down (%d)", len(self.consoles))
             return
 
+        did = None
+        # v26: hello carries Web Serial device info (vid/pid/serialNumber/label)
+        # — the relay binds this link to that device's session (per-device
+        # replacement only). If no hello arrives, this is the DEFAULT device.
         if self.ws is not None:
             log.warning("second browser link — replacing")
             try:
@@ -1277,12 +1378,29 @@ class Relay:
         try:
             async for msg in connection:
                 if isinstance(msg, bytes):
-                    self.monitor_tap(msg, "rx")
-                    self.on_serial_bytes(msg)
+                    self.monitor_tap(msg, "rx", self.device_by_ws.get(connection))
+                    self.on_serial_bytes(msg, self.device_by_ws.get(connection))
                 else:
                     m = json.loads(msg)
                     if m.get("t") == "hello":
                         log.info("BROWSER hello: baud=%s (port currently open)", m.get("baud"))
+                        # v26: per-device binding (registry upsert + link map)
+                        info = m.get("device")
+                        if isinstance(info, dict):
+                            did, rec = registry_upsert(info)
+                            self.device_links[did] = connection
+                            self.device_by_ws[connection] = did
+                            self.device_ports[did] = rec["rfcPort"]
+                            st = self.device_state.setdefault(did, {
+                                "ready": asyncio.Event(), "phase": None,
+                                "phase_src": None, "scan": bytearray(),
+                                "total": None, "done": 0,
+                                "counts": {"rx": 0, "tx": 0},
+                            })
+                            st["ready"].set()
+                            await self._ensure_device_server(did, rec["rfcPort"])
+                            log.info("device bound: %s -> rfc2217:%d (label=%s)",
+                                     did, rec["rfcPort"], rec.get("label"))
                     if m.get("t") == "ann":
                         # FIELD 2026-10-26: annotations used to be browser-local
                         # only and died with the tab. Mirror them into the relay
@@ -1302,20 +1420,25 @@ class Relay:
             self.ws = None
             self.browser_ready.clear()
 
-    def on_serial_bytes(self, data):
+    def on_serial_bytes(self, data, did=None):
         """USB -> esptool: escape through PortManager, write to socket."""
-        if self.pm is None or self.pm_writer is None:
+        # v26: prefer the device's own pm; fall back to the legacy singleton.
+        pm = self.pm
+        pm_writer = self.pm_writer
+        if did and did in self.device_pms:
+            pm, pm_writer = self.device_pms[did]
+        if pm is None or pm_writer is None:
             return
         try:
-            out = b"".join(self.pm.escape(data))
+            out = b"".join(pm.escape(data))
         except Exception as e:
             log.warning("escape failed: %s", e)
             return
-        LOOP.call_soon_threadsafe(self._sock_send, out)
+        LOOP.call_soon_threadsafe(self._sock_send, out, pm_writer)
 
-    def _sock_send(self, data):
+    def _sock_send(self, data, pm_writer=None):
         try:
-            self.pm_writer.write(data)
+            (pm_writer or self.pm_writer).write(data)
         except Exception as e:
             log.warning("rfc2217 send: %s", e)
 
@@ -1393,6 +1516,18 @@ class Relay:
         if self._wire_phase_frame is not None:
             frames.append(self._wire_phase_frame)
             self._wire_phase_frame = None
+        # v26: per-device phase frames, tagged with their device id
+        for did, view in list(self.device_state.items()):
+            if did == "default":
+                continue
+            f = getattr(view, "_wire_phase_frame", None)
+            if f:
+                try:
+                    m = json.loads(f); m["device"] = did
+                    frames.append(json.dumps(m))
+                except Exception:
+                    frames.append(f)
+                view._wire_phase_frame = None
         for d in ("rx", "tx"):
             buf = self.mon_buf[d]
             if not buf:
@@ -1428,6 +1563,16 @@ class Relay:
                 wire_decode_phase(self, chunk, direction)
             except Exception:
                 pass  # strictly observational: a decoder bug must not kill the task
+
+    def _handle_dev_rename(self, m):
+        if m.get("token") != SETTINGS_TOKEN:
+            return (False, "bad token — reload the devices page")
+        did = m.get("deviceId")
+        try:
+            ok = registry_rename(did, m.get("label"), m.get("rfcPort"))
+            return (ok, f"device {did} updated" if ok else f"unknown device {did}")
+        except ValueError as e:
+            return (False, str(e))
 
     async def _handle_settings(self, m):
         """v24: apply + persist web settings; restart the launchd label for
@@ -1483,15 +1628,48 @@ class Relay:
                                 if self.last_activity else None),
             "esptool_phase": self.phase,
             "esptool_phase_src": self.phase_src,
+            "devices": [
+                {**rec,
+                 "link": "up" if rec["id"] in self.device_links else "down",
+                 "phase": getattr(self.device_state.get(rec["id"]), "phase", None),
+                 "counts": getattr(self.device_state.get(rec["id"]), "counts", {})}
+                for rec in registry_list()
+            ],
             "mon_tail": list(self.mon_lines)[-30:],
             "log_tail": list(LOG_RING.deque)[-40:],
         }
 
     # ---------- RFC2217 side (esptool clients) ----------
 
-    async def rfc2217_client(self, reader, writer):
-        """Fully in-loop: asyncio reader/writer, no raw-socket thread."""
-        if self.pm is not None:
+    async def _ensure_device_server(self, did, rfc_port):
+        """v26: one RFC2217 server per assigned device port (persisted)."""
+        if rfc_port in self.device_servers:
+            return
+        async def handler(reader, writer, _did=did, _port=rfc_port):
+            await self._device_rfc2217_client(_did, reader, writer)
+        self.device_servers[rfc_port] = await asyncio.start_server(
+            handler, RFC_BIND, rfc_port)
+        log.info("device %s listening on %s:%d", did, RFC_BIND, rfc_port)
+
+    async def _device_rfc2217_client(self, did, reader, writer):
+        """Per-device RFC2217 client: the session for this device's port."""
+        existing = self.device_pms.get(did)
+        if existing is not None:
+            log.warning("rfc2217: device %s already has an active client — refusing new one", did)
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return
+        await self.rfc2217_client_for_device(did, reader, writer)
+
+    async def rfc2217_client(self, reader, writer, did="default"):
+        """Fully in-loop: asyncio reader/writer, no raw-socket thread.
+        v26: did selects the device session. The legacy singleton (did='default')
+        behaves exactly as before; additional devices get their own pm/ws/gate.
+        """
+        if did == "default" and self.pm is not None:
             log.warning("rfc2217: client already active — refusing new one")
             try:
                 writer.close()
@@ -1515,12 +1693,16 @@ class Relay:
         # browser_ready made every reflash fail "does not support RFC2217"
         # whenever the tab's serial link wasn't up yet. Data forwarding is
         # gated instead, further down.
-        bridge = WebSerialBridge(self)
+        bridge = WebSerialBridge(self, did)
         conn = _SockConn(writer)
         pm = PortManager(bridge, conn, logger=log)
-        self.pm = pm
-        self.pm_writer = writer
-        log.info("rfc2217 serving %s", peer)
+        if did == "default":
+            self.pm = pm
+            self.pm_writer = writer
+        self.device_pms[did] = (pm, writer)
+        if did == "default":
+            self.device_ports.setdefault("default", RFC_PORT)
+        log.info("rfc2217 serving %s (device=%s)", peer, did)
 
         try:
             # NEGOTIATION MUST NEVER BE GATED (field 17:16): esptool's
@@ -1544,18 +1726,22 @@ class Relay:
                     # decoder reads phases from host requests. Without this
                     # tap, tx stays 0 during a flash (field 08:28).
                     self.monitor_tap(bytes(batch), "tx")
-                    if not self.browser_ready.is_set():
+                    ready = self.device_state.get(did, {}).get("ready") if did != "default" else None
+                    if ready is not None and not ready.is_set():
                         # v24: BROWSER_WAIT_S finally consumed (was a phantom
                         # knob since v8). Give the serial tab the configured
                         # grace to (re)connect before dropping the payload —
                         # flash sessions no longer die on a race with Connect.
                         try:
                             await asyncio.wait_for(
-                                self.browser_ready.wait(), timeout=BROWSER_WAIT_S)
+                                (ready or self.browser_ready).wait(), timeout=BROWSER_WAIT_S)
                         except asyncio.TimeoutError:
                             pass
-                    if self.browser_ready.is_set():
-                        await self._ws_send(bytes(batch))
+                    if (ready or self.browser_ready).is_set():
+                        if did != "default" and did in self.device_links:
+                            await self.device_links[did].send(bytes(batch))
+                        else:
+                            await self._ws_send(bytes(batch))
                     # else: payload dropped when no browser link (USB is
                     # nowhere connected — nothing to lose)
         except (OSError, asyncio.IncompleteReadError) as e:
@@ -1641,6 +1827,25 @@ async def http_gate(connection, request):
         if r is not None:
             r.cap.clear()
         return Response(200, "OK", Headers([("Content-Type", "text/plain")]), b"cleared")
+    if request.path == "/devices.json":
+        rows = []
+        for rec in registry_list():
+            did = rec["id"]
+            st = self.device_state.get(did, {})
+            rows.append({
+                **rec,
+                "link": "up" if did in self.device_links else "down",
+                "phase": st.get("phase"),
+                "counts": st.get("counts", {"rx": 0, "tx": 0}),
+            })
+        return Response(200, "OK", Headers([("Content-Type", "application/json")]),
+                        json.dumps({"devices": rows}).encode())
+    if request.path == "/devices":
+        body = DEVICES_PAGE.replace("%%TOKEN%%", SETTINGS_TOKEN).encode()
+        return Response(200, "OK", Headers([
+            ("Content-Type", "text/html; charset=utf-8"),
+            ("Cache-Control", "no-store"),
+        ]), body)
     if request.path == "/settings":
         body = SETTINGS_PAGE.replace("%%TOKEN%%", SETTINGS_TOKEN).encode()
         return Response(200, "OK", Headers([
@@ -1765,6 +1970,70 @@ $('save').onclick=send;
 </script>
 </body></html>"""
 
+
+DEVICES_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studio Alight — Devices</title>
+<meta name="color-scheme" content="dark light">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<style>
+ body{font-family:var(--font-display);max-width:900px;margin:0 auto;padding:3rem 1rem 4rem;
+       background:var(--color-bg);color:var(--color-text);line-height:1.6;min-height:100vh}
+ table{border-collapse:collapse;width:100%;font-family:var(--font-mono);font-size:.72rem}
+ th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid var(--color-line)}
+ th{font-size:.62rem;letter-spacing:.12em;color:var(--color-mute);text-transform:uppercase;font-weight:400}
+ input{background:var(--color-panel);color:var(--color-text);border:1px solid var(--color-line);
+       border-radius:4px;padding:.3rem .45rem;font-family:var(--font-mono);font-size:.72rem;width:100%}
+ input:focus{outline:none;border-color:var(--color-accent)}
+ .port{font-family:var(--font-mono);color:var(--color-accent)}
+ .up{color:var(--color-ok)} .down{color:var(--color-mute)}
+ #msg{font-family:var(--font-mono);font-size:.7rem;min-height:1.2em;color:var(--color-mute)}
+ #msg.ok{color:var(--color-ok)} #msg.bad{color:var(--color-bad)}
+ button.save{background:var(--color-accent);color:var(--color-card,#111);border:0;border-radius:6px;
+       padding:.3rem .7rem;font-family:var(--font-mono);font-size:.7rem;cursor:pointer}
+</style></head><body>
+<div class="brand"><span class="tagline">Devices — registry & assigned ports</span></div>
+<hr class="rule">
+<table id="tbl"><thead><tr><th>label (editable)</th><th>identity</th><th>rfc2217</th><th>link</th><th>phase</th><th></th></tr></thead>
+<tbody id="rows"></tbody></table>
+<p class="hint" style="margin-top:.6rem;font-size:.66rem;color:var(--color-mute)">
+Names and ports persist across restarts and unplugs. Each board owns its port;
+sessions read /devices.json to know which port to flash — no session-level assignment.
+</p>
+<div id="msg"></div>
+<script>
+const TOKEN="%%TOKEN%%"; const $=id=>document.getElementById(id);
+function rows(){
+  fetch('/devices.json',{cache:'no-store'}).then(r=>r.json()).then(d=>{
+    const el=$('rows'); el.innerHTML='';
+    (d.devices||[]).forEach(v=>{
+      const tr=document.createElement('tr');
+      const ident=[v.vendorId?('0x'+v.vendorId.toString(16)):'',v.productId?('0x'+v.productId.toString(16)):'',v.serialNumber||v.id].filter(Boolean).join(' · ');
+      tr.innerHTML =
+        '<td><input class="lbl" value="'+(v.label||v.id).replace(/"/g,'&quot;')+'"></td>'+
+        '<td class="hint">'+ident+'</td>'+
+        '<td class="port">:'+v.rfcPort+'</td>'+
+        '<td class="'+(v.link==='up'?'up':'down')+'">'+(v.link||'down')+'</td>'+
+        '<td>'+(v.phase||'idle')+'</td>'+
+        '<td><button class="save">save</button></td>';
+      tr.querySelector('.save').onclick=()=>{
+        const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/console');
+        ws.onopen=()=>ws.send(JSON.stringify({t:'dev-rename',token:TOKEN,deviceId:v.id,label:tr.querySelector('.lbl').value}));
+        ws.onmessage=ev=>{ if(ev.data[0]!=='{')return; let m; try{m=JSON.parse(ev.data)}catch(e){return}
+          if(m.t==='cfg-ack'){ $('msg').textContent=m.ok?('saved — '+m.note):('rejected — '+m.note);
+            $('msg').className=m.ok?'ok':'bad'; ws.close(); rows(); } };
+        ws.onerror=()=>{ $('msg').textContent='connection error'; };
+      };
+      el.appendChild(tr);
+    });
+    if(!(d.devices||[]).length) el.innerHTML='<tr><td colspan="6" class="hint">no devices seen yet — connect a board in a relay tab</td></tr>';
+  }).catch(()=>{ $('rows').innerHTML='<tr><td colspan="6">could not load devices</td></tr>'; });
+}
+rows(); setInterval(rows,5000);
+</script>
+</body></html>"""
 
 RELAY = None
 relay_state = {}
