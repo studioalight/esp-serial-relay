@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v30"
+RELAY_VERSION = "v31"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -386,9 +386,9 @@ PAGE = """<!doctype html>
 </div>
 <div class="box">
  <div class="box-label">Procedure</div>
- <p class="hint">Grant the browser access to your <em>USB serial port</em>, then keep
+ <p class="hint" id="procedure-note">Grant the browser access to your <em>USB serial port</em>, then keep
  this tab open while a flash runs. Bytes flow <em>browser ⇄ gateway</em>; the gateway
- exposes the line to <em>esptool</em> as rfc2217://127.0.0.1:4001. If a flash wedges,
+ exposes the line to <em>esptool</em>. If a flash wedges,
  reloading this tab is the whole reset procedure.</p>
 </div>
 <div class="box advanced">
@@ -686,6 +686,18 @@ async function connect(){
         if(m.t==='device-bound'){
           const lb=$('bridge-label');
           if(lb) lb.textContent='Serial bridge — '+(m.label||m.id)+' · device '+'rfc2217 :'+m.rfcPort;
+          const pn=$('procedure-line');
+          const proc=$('procedure-note');
+          if(pn) pn.textContent='rfc2217://'+location.hostname+':'+m.rfcPort;
+          else {
+            // live URL appended to the procedure text (kept as a styled line)
+            if(proc && !proc.querySelector('.proc-url')){
+              const u=document.createElement('span'); u.className='proc-url';
+              proc.appendChild(u);
+            }
+            const u=proc && proc.querySelector('.proc-url');
+            if(u) u.innerHTML='<br>esptool connects as <code>rfc2217://'+location.hostname+':'+m.rfcPort+'</code>';
+          }
         }
         else if(m.t==='sig'){
           try{ await port.setSignals({
