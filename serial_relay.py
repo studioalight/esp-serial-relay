@@ -47,7 +47,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v29"
+RELAY_VERSION = "v30"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -372,7 +372,7 @@ PAGE = """<!doctype html>
  <p class="hint" style="margin-top:.6rem">Pick your <em>serial port</em> when the browser asks. Keep this tab open — that's it. The gateway handles the rest and shows progress in Advanced mode.</p>
 </div>
 <div class="box advanced">
- <div class="box-label">Serial bridge — bridge-Mac side</div>
+ <div class="box-label" id="bridge-label">Serial bridge — bridge-Mac side</div>
  <div class="mon-ctl">
   <button id="btn-adv">Connect USB serial (advanced)</button>
   <label style="margin-left:.4rem">baud
@@ -683,7 +683,11 @@ async function connect(){
     ws.onmessage=async ev=>{
       if(typeof ev.data==='string'){
         let m=null; try{ m=JSON.parse(ev.data); }catch(e){ return; }
-        if(m.t==='sig'){
+        if(m.t==='device-bound'){
+          const lb=$('bridge-label');
+          if(lb) lb.textContent='Serial bridge — '+(m.label||m.id)+' · device '+'rfc2217 :'+m.rfcPort;
+        }
+        else if(m.t==='sig'){
           try{ await port.setSignals({
             dataTerminalReady: m.dtr!==undefined ? !!m.dtr : undefined,
             requestToSend:     m.rts!==undefined ? !!m.rts : undefined,
@@ -1424,6 +1428,13 @@ class Relay:
                             await self._ensure_device_server(did, rec["rfcPort"])
                             log.info("device bound: %s -> rfc2217:%d (label=%s)",
                                      did, rec["rfcPort"], rec.get("label"))
+                            try:
+                                await connection.send(json.dumps({
+                                    "t": "device-bound", "id": did,
+                                    "label": rec.get("label") or did,
+                                    "rfcPort": rec["rfcPort"]}))
+                            except Exception:
+                                pass
                     if m.get("t") == "ann":
                         # FIELD 2026-10-26: annotations used to be browser-local
                         # only and died with the tab. Mirror them into the relay
@@ -2063,7 +2074,7 @@ function rows(){
         ws.onopen=()=>ws.send(JSON.stringify({t:'dev-rename',token:TOKEN,deviceId:v.id,label:tr.querySelector('.lbl').value}));
         ws.onmessage=ev=>{ if(ev.data[0]!=='{')return; let m; try{m=JSON.parse(ev.data)}catch(e){return}
           if(m.t==='cfg-ack'){ $('msg').textContent=m.ok?('saved — '+m.note):('rejected — '+m.note);
-            $('msg').className=m.ok?'ok':'bad'; ws.close(); rows(); } };
+            $('msg').className=m.ok?'ok':'bad'; ws.close(); lastRowsJson=''; rows(); } };
         ws.onerror=()=>{ $('msg').textContent='connection error'; };
       };
       el.appendChild(tr);
@@ -2071,7 +2082,15 @@ function rows(){
     if(!(d.devices||[]).length) el.innerHTML='<tr><td colspan="6" class="hint">no devices seen yet — connect a board in a relay tab</td></tr>';
   }).catch(()=>{ $('rows').innerHTML='<tr><td colspan="6">could not load devices</td></tr>'; });
 }
-rows(); setInterval(rows,5000);
+let lastRowsJson='';
+let editFocus=false;
+document.addEventListener('focusin',e=>{ if(e.target.matches('.lbl,.port')) editFocus=true; });
+document.addEventListener('focusout',e=>{ if(e.target.matches('.lbl,.port')) editFocus=false; });
+function rows(){
+  if(editFocus) return;               // never clobber a row the user is editing
+  fetch('/devices.json',{cache:'no-store'}).then(r=>r.json()).then(d=>{
+    const j=JSON.stringify(d.devices||[]); if(j===lastRowsJson) return; lastRowsJson=j;
+    const el=$('rows'); el.innerHTML='';
 </script>
 </body></html>"""
 
