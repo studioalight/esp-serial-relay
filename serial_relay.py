@@ -211,6 +211,8 @@ def registry_rename(did, label=None, rfc_port=None):
     _save_devices(d)
     return True
 
+_TAILNET_IP = None
+
 def tailscale_ipv4():
     """The host's Tailscale IPv4 (or '') — used for the tailnet bind option.
     Cached for the daemon lifetime; a reboot/reconnect changes it anyway."""
@@ -2114,8 +2116,13 @@ sessions read /devices.json to know which port to flash — no session-level ass
 <div id="msg"></div>
 <script>
 const TOKEN="%%TOKEN%%"; const $=id=>document.getElementById(id);
+let lastRowsJson=null; let editFocus=false;
+document.addEventListener('focusin',e=>{ if(e.target.matches('.lbl,.port')) editFocus=true; });
+document.addEventListener('focusout',e=>{ if(e.target.matches('.lbl,.port')) editFocus=false; });
 function rows(){
+  if(editFocus) return;               // never clobber a row the user is editing
   fetch('/devices.json',{cache:'no-store'}).then(r=>r.json()).then(d=>{
+    const j=JSON.stringify(d.devices||[]); if(j===lastRowsJson) return; lastRowsJson=j;
     const el=$('rows'); el.innerHTML='';
     (d.devices||[]).forEach(v=>{
       const tr=document.createElement('tr');
@@ -2140,15 +2147,7 @@ function rows(){
     if(!(d.devices||[]).length) el.innerHTML='<tr><td colspan="6" class="hint">no devices seen yet — connect a board in a relay tab</td></tr>';
   }).catch(()=>{ $('rows').innerHTML='<tr><td colspan="6">could not load devices</td></tr>'; });
 }
-let lastRowsJson='';
-let editFocus=false;
-document.addEventListener('focusin',e=>{ if(e.target.matches('.lbl,.port')) editFocus=true; });
-document.addEventListener('focusout',e=>{ if(e.target.matches('.lbl,.port')) editFocus=false; });
-function rows(){
-  if(editFocus) return;               // never clobber a row the user is editing
-  fetch('/devices.json',{cache:'no-store'}).then(r=>r.json()).then(d=>{
-    const j=JSON.stringify(d.devices||[]); if(j===lastRowsJson) return; lastRowsJson=j;
-    const el=$('rows'); el.innerHTML='';
+rows(); setInterval(rows,5000);
 </script>
 </body></html>"""
 
