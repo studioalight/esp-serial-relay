@@ -696,7 +696,8 @@ async function connect(){
               proc.appendChild(u);
             }
             const u=proc && proc.querySelector('.proc-url');
-            if(u) u.innerHTML='<br>esptool connects as <code>rfc2217://'+location.hostname+':'+m.rfcPort+'</code>';
+            if(u) u.innerHTML='esptool runs <b>on the gateway</b> as <code>rfc2217://127.0.0.1:'+m.rfcPort+'</code>'+
+            '<br>(from any other tailnet machine: <code>rfc2217://'+location.hostname+':'+m.rfcPort+'</code>)';
           }
         }
         else if(m.t==='sig'){
