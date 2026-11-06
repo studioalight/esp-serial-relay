@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v34"
+RELAY_VERSION = "v35"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -226,8 +226,11 @@ def tailscale_ipv4():
             r = _subprocess.run([ts, "ip", "-4"], capture_output=True,
                                 text=True, timeout=10)
             ip = r.stdout.strip().split("\n")[0].strip()
-            _TAILNET_IP = ip if ip else ""
-            return _TAILNET_IP
+            import re as _re
+            if _re.fullmatch(r"(?:(?:\d{1,3}\.){3}\d{1,3})", ip):
+                _TAILNET_IP = ip
+                return _TAILNET_IP
+            continue
         except Exception:
             continue
     _TAILNET_IP = ""
