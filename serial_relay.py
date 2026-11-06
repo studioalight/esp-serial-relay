@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v33"
+RELAY_VERSION = "v34"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -220,7 +220,8 @@ def tailscale_ipv4():
     global _TAILNET_IP
     if _TAILNET_IP is not None:
         return _TAILNET_IP
-    for ts in ("/opt/homebrew/bin/tailscale", "/usr/bin/tailscale", "tailscale"):
+    for ts in ("/opt/homebrew/bin/tailscale", "/usr/bin/tailscale",
+               "/Applications/Tailscale.app/Contents/MacOS/Tailscale", "tailscale"):
         try:
             r = _subprocess.run([ts, "ip", "-4"], capture_output=True,
                                 text=True, timeout=10)
