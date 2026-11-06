@@ -35,6 +35,7 @@ import logging
 import os
 import queue
 import subprocess
+import subprocess as _subprocess
 import threading
 import time
 from collections import deque
