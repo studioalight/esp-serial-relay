@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import threading
 import time
 from collections import deque
@@ -47,7 +48,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v32"
+RELAY_VERSION = "v33"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -209,6 +210,24 @@ def registry_rename(did, label=None, rfc_port=None):
     rec["lastSeen"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     _save_devices(d)
     return True
+
+def tailscale_ipv4():
+    """The host's Tailscale IPv4 (or '') — used for the tailnet bind option.
+    Cached for the daemon lifetime; a reboot/reconnect changes it anyway."""
+    global _TAILNET_IP
+    if _TAILNET_IP is not None:
+        return _TAILNET_IP
+    for ts in ("/opt/homebrew/bin/tailscale", "/usr/bin/tailscale", "tailscale"):
+        try:
+            r = _subprocess.run([ts, "ip", "-4"], capture_output=True,
+                                text=True, timeout=10)
+            ip = r.stdout.strip().split("\n")[0].strip()
+            _TAILNET_IP = ip if ip else ""
+            return _TAILNET_IP
+        except Exception:
+            continue
+    _TAILNET_IP = ""
+    return _TAILNET_IP
 
 def registry_list():
     d = _load_devices()
@@ -696,8 +715,12 @@ async function connect(){
               proc.appendChild(u);
             }
             const u=proc && proc.querySelector('.proc-url');
-            if(u) u.innerHTML='esptool runs <b>on the gateway</b> as <code>rfc2217://127.0.0.1:'+m.rfcPort+'</code>'+
-            '<br>(from any other tailnet machine: <code>rfc2217://'+location.hostname+':'+m.rfcPort+'</code>)';
+            if(m.rfcBind && m.rfcBind!=='127.0.0.1' && m.rfcBind!=='::1'){
+              if(u) u.innerHTML='RFC2217 binds <b>'+(m.rfcBind==='0.0.0.0'?'all interfaces':'the tailnet interface ('+m.rfcBind+')')+'</b> — esptool from the gateway or any tailnet machine: <code>rfc2217://'+m.rfcBind+':'+m.rfcPort+'</code>';
+            } else if(u){
+              u.innerHTML='esptool on the gateway: <code>rfc2217://127.0.0.1:'+m.rfcPort+'</code>'+
+              '<br>(RFC2217 loopback-only in this mode — set <b>rfc2217 bind</b> to the tailnet interface in Settings to flash from other shores)';
+            }
           }
         }
         else if(m.t==='sig'){
@@ -1445,7 +1468,9 @@ class Relay:
                                 await connection.send(json.dumps({
                                     "t": "device-bound", "id": did,
                                     "label": rec.get("label") or did,
-                                    "rfcPort": rec["rfcPort"]}))
+                                    "rfcPort": rec["rfcPort"],
+                                    "rfcBind": RFC_BIND,
+                                    "tailnetIp": tailscale_ipv4() or None}))
                             except Exception:
                                 pass
                     if m.get("t") == "ann":
@@ -1678,6 +1703,8 @@ class Relay:
             "uptime_s": int(now - START_TS),
             "serial_link": self.ws is not None,
             "rfc2217": "serving" if self.pm is not None else "free",
+            "rfcBind": RFC_BIND,
+            "tailnetIp": tailscale_ipv4() or None,
             "console_listeners": len(self.consoles),
             "counts": dict(self.counts),
             "last_activity_s": (int(now - self.last_activity)
@@ -1921,6 +1948,7 @@ async def http_gate(connection, request):
         snap = ({"ok": r.status_snapshot()["ok"]} if r else {"ok": False})
         eff = {"rfcPort": RFC_PORT, "wsPort": WS_PORT, "rfcBind": RFC_BIND,
                "browserWait": BROWSER_WAIT_S, "source": "live",
+               "tailnetIp": tailscale_ipv4() or None,
                "overrides": list(load_settings().keys()), "version": RELAY_VERSION}
         eff.update(snap)
         body = json.dumps(eff).encode()
@@ -1989,8 +2017,15 @@ SETTINGS_PAGE = """<!doctype html>
    <div class="note">esptool connects here (rfc2217://…:PORT) · change restarts the daemon</div></div></div>
  <div class="fld"><label>web/ws port</label><div><input id="wsPort" type="number" min="1" max="65535">
    <div class="note">this GUI + dashboard + WS · change restarts the daemon</div></div></div>
- <div class="fld"><label>rfc2217 bind</label><div><input id="rfcBind" type="text">
-   <div class="note">loopback 127.0.0.1 is the safe default — binding wider exposes the flash port to your network</div></div></div>
+ <div class="fld"><label>rfc2217 bind</label><div>
+   <select id="rfcBindSel" style="font-family:var(--font-mono);font-size:.8rem;background:var(--color-panel);color:var(--color-text);border:1px solid var(--color-line);border-radius:4px;padding:.4rem .6rem;max-width:100%">
+     <option value="127.0.0.1">Loopback only (127.0.0.1) — esptool on this machine only</option>
+     <option value="__tailnet__">Tailnet interface — esptool from any tailnet machine (safest exposure)</option>
+     <option value="0.0.0.0">All interfaces (0.0.0.0) — esptool from any machine on the network/LAN</option>
+   </select>
+   <input id="rfcBind" type="text" style="margin-top:.4rem">
+   <div class="note" id="tailnet-note"></div>
+   <div class="note">Changing this restarts the daemon to rebind · loopback is the safe default</div></div></div>
  <div class="fld"><label>browser wait s</label><div><input id="browserWait" type="number" min="1" max="600" step="1">
    <div class="note">grace for the serial tab to (re)connect before a flash payload drops · applies live</div></div></div>
 </div>
@@ -2005,6 +2040,16 @@ fetch('/settings.json',{cache:'no-store'}).then(r=>r.json()).then(s=>{
   $('rfcPort').value=s.rfcPort; $('wsPort').value=s.wsPort;
   $('rfcBind').value=s.rfcBind; $('browserWait').value=s.browserWait;
   $('ver').textContent='daemon '+s.version;
+  // v33: bind selector hydration — resolve the tailnet option at load
+  const tip=s.tailnetIp||'';
+  const sel=$('rfcBindSel'), note=$('tailnet-note');
+  if(note) note.textContent = tip ? ('tailnet IP on this machine: '+tip) : 'tailscale not detected on this machine — tailnet binding unavailable';
+  const cur=s.rfcBind||'127.0.0.1';
+  [...sel.options].forEach(o=>{ if(o.value==='__tailnet__'&&tip) o.value=tip; });
+  sel.value=[...sel.options].some(o=>o.value===cur)?cur:'127.0.0.1';
+  if(sel.value!==cur){ /* custom value — reflect it in the text input, select shows loopback */ }
+  sel.onchange=()=>{ if(sel.value!=='custom') $('rfcBind').value=sel.value; };
+  $('rfcBind').oninput=()=>{ sel.value=[...sel.options].some(o=>o.value===$('rfcBind').value)?$('rfcBind').value:'custom'; };
   document.documentElement.dataset.settingsSource=s.source||'defaults';
 }).catch(()=>{ $('msg').textContent='could not load settings'; $('msg').className='bad'; });
 function st(){
