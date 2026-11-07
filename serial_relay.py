@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v42"
+RELAY_VERSION = "v43"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -398,8 +398,10 @@ PAGE = """<!doctype html>
  <p class="hint" style="margin-top:.6rem">Pick your <em>serial port</em> when the browser asks. Keep this tab open — that's it. The gateway handles the rest and shows progress in Advanced mode.</p>
 </div>
 <div class="box advanced">
- <div class="box-label" id="bridge-label">Serial bridge — bridge-Mac side
+ <div class="box-label" id="bridge-label" style="align-items:center">
+  <span id="bridge-device-text">Serial bridge — bridge-Mac side</span>
   <button class="mini" id="board-reset" title="local DTR/RTS reset pulse — browser-side timing" style="margin-left:.5rem">⏻ reset</button>
+  <button class="mini" id="force-dl" title="page-local force-download dance: pulse + watch the ROM banner, up to 4 attempts with escalating holds — needs NO buttons on the board; verify success by 'waiting for download' in the RX stream" style="margin-left:.3rem">⬇ force dl</button>
  </div>
  <div class="mon-ctl">
   <button id="btn-adv">Connect USB serial (advanced)</button>
@@ -531,6 +533,9 @@ function flushPend(dir,force){
   for(const seg of parts) emit(dir,seg);
 }
 function monAdd(bytes, dir){
+  if(rxWatchOn!==false && dir==='rx' && bytes && bytes.length<4000){
+    try{ rxWatchPush(new TextDecoder('utf-8',{fatal:false}).decode(bytes)); }catch(e){}
+  }
   if(!$('flow-dl').checked) return;
   if(dir==='rx') rxCount+=bytes.length; else dlCount+=bytes.length;
   setBytes();
@@ -678,6 +683,45 @@ async function localBoardReset(){
 }
 $('board-reset').onclick=localBoardReset;
 
+/* v43: force-download — page-local dance + RX banner watch.
+ * Sequence per attempt: release all → arm IO0 (DTR) → EN reset (RTS) →
+ * hold (escalating) → EN release with IO0 low → release.
+ * Success = the ROM's own 'waiting for download' banner arriving on RX.
+ * The board needs NO buttons; the browser needs no relay hop.
+ * LIMITATION (field-tested): on CH9102/CH340 strapping, hop-free timing
+ * helps but Chromium's driver layer may still not couple IO0 — if 4
+ * attempts end without the banner, the board needs the KICK firmware
+ * command (or a manual BOOT touch). Logged per attempt either way. */
+let RXWATCH=[];
+let rxWatchOn=false;
+function rxWatchPush(t){ RXWATCH.push(t); if(RXWATCH.length>40) RXWATCH.shift(); }
+$('force-dl').onclick=async ()=>{
+  if(!port){ log('no port open — connect first','err'); return; }
+  const btn=$('force-dl'); btn.disabled=true;
+  log('force-download: pulsing for ROM download mode (4 attempts)…');
+  let ok=false;
+  for(let attempt=1; attempt<=4 && !ok; attempt++){
+    const hold=[300,600,900,1400][attempt-1];
+    try{
+      await port.setSignals({dataTerminalReady:false, requestToSend:false});
+      await new Promise(r=>setTimeout(r,200));
+      await port.setSignals({dataTerminalReady:true, requestToSend:false});
+      await new Promise(r=>setTimeout(r,150));
+      await port.setSignals({requestToSend:true});          // EN low
+      await new Promise(r=>setTimeout(r,120));
+      await port.setSignals({requestToSend:false});         // EN release, IO0 held
+      await new Promise(r=>setTimeout(r,hold));             // hold window
+      await port.setSignals({dataTerminalReady:false});     // IO0 release
+    }catch(e){ log('pulse failed: '+e,'err'); }
+    await new Promise(r=>setTimeout(r,450));
+    ok = RXWATCH.join('\n').includes('waiting for download');
+    log('attempt '+attempt+' (hold '+hold+'ms): '+(ok?'ROM LATCHED — waiting for download':'no latch'), ok?'ok':'');
+  }
+  btn.disabled=false;
+  if(ok) log('board in ROM download mode — flash with --before no_reset','ok');
+  else log('no download latch in 4 attempts — board needs KICK firmware or a manual BOOT touch','err');
+};
+
 async function closePort(){
   reading=false;
   try{ reader && await reader.cancel(); }catch(e){}
@@ -732,8 +776,8 @@ async function connect(){
       if(typeof ev.data==='string'){
         let m=null; try{ m=JSON.parse(ev.data); }catch(e){ return; }
         if(m.t==='device-bound'){
-          const lb=$('bridge-label');
-          if(lb) lb.textContent='Serial bridge — '+(m.label||m.id)+' · device '+'rfc2217 :'+m.rfcPort;
+          const dt=$('bridge-device-text');
+          if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
           const pn=$('procedure-line');
           const proc=$('procedure-note');
           if(pn) pn.textContent='rfc2217://'+location.hostname+':'+m.rfcPort;
