@@ -2017,6 +2017,24 @@ async def http_gate(connection, request):
         body = json.dumps(snap).encode()
         return Response(200, "OK", Headers([("Content-Type", "application/json")]),
                         body)
+    # 2026-11-07 (from session a95de6a0, merged into source): in-tab/native flasher
+    # assets — whitelisted firmware files from the gateway's /tmp staging.
+    if request.path in ("/flash/bootloader.bin", "/flash/partition-table.bin", "/flash/app.bin", "/flash/run.sh"):
+        fname = {"/flash/bootloader.bin": "bootloader.bin",
+                 "/flash/partition-table.bin": "partition-table.bin",
+                 "/flash/app.bin": "liminal-clock.bin",
+                 "/flash/run.sh": "liminal_flash_run.sh"}[request.path]
+        pth = os.path.join("/tmp", fname)
+        if not os.path.isfile(pth):
+            return Response(404, "missing", Headers([("Content-Type", "text/plain")]), b"staged file missing on gateway")
+        with open(pth, "rb") as fh:
+            blob = fh.read()
+        ctype = "text/x-shellscript" if request.path.endswith(".sh") else "application/octet-stream"
+        return Response(200, "OK", Headers([
+            ("Content-Type", ctype),
+            ("Cache-Control", "no-store"),
+            ("Content-Length", str(len(blob))),
+        ]), blob)
     if request.path in ("/favicon.ico", "/favicon-16.png", "/favicon-32.png",
                         "/favicon-48.png", "/favicon-180.png", "/apple-touch-icon.png"):
         # v23: the mascot holding a DB9, baked in. /favicon.ico keeps a real
