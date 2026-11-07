@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v35"
+RELAY_VERSION = "v36"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1436,15 +1436,11 @@ class Relay:
         # v26: hello carries Web Serial device info (vid/pid/serialNumber/label)
         # — the relay binds this link to that device's session (per-device
         # replacement only). If no hello arrives, this is the DEFAULT device.
-        if self.ws is not None:
-            log.warning("second browser link — replacing")
-            try:
-                await self.ws.close()
-            except Exception:
-                pass
-        self.ws = connection
-        self.browser_ready.set()
-        log.info("browser link up")
+        # v36: NO global binding at accept. The link binds to its device at
+        # hello (registry identity). Legacy tabs (hello without device info)
+        # take over the default slot — only then is self.ws replaced.
+        self.browser_ready.set()   # backward-compat gate (real gating is per-device)
+        log.info("browser link up (unbound — resolves at hello)")
         try:
             async for msg in connection:
                 if isinstance(msg, bytes):
@@ -1469,6 +1465,17 @@ class Relay:
                                 st.ready = asyncio.Event()
                             st.ready.set()
                             await self._ensure_device_server(did, rec["rfcPort"])
+                            # the RFC_PORT (default) slot binds this device's link:
+                            # esptool on :4001 must reach THIS tab, not the last link
+                            if rec["rfcPort"] == RFC_PORT:
+                                if self.ws is not None and self.ws is not connection:
+                                    log.warning("default slot rebind: replacing previous global link")
+                                    try:
+                                        await self.ws.close()
+                                    except Exception:
+                                        pass
+                                self.ws = connection
+                                self.browser_ready.set()
                             log.info("device bound: %s -> rfc2217:%d (label=%s)",
                                      did, rec["rfcPort"], rec.get("label"))
                             try:
@@ -1480,7 +1487,7 @@ class Relay:
                                     "tailnetIp": tailscale_ipv4() or None}))
                             except Exception:
                                 pass
-                    if m.get("t") == "ann":
+
                         # FIELD 2026-10-26: annotations used to be browser-local
                         # only and died with the tab. Mirror them into the relay
                         # log so event markers survive and correlate with capture.
@@ -1496,8 +1503,13 @@ class Relay:
             pass
         finally:
             log.info("browser link down")
-            self.ws = None
-            self.browser_ready.clear()
+            # v36: clear per-device links only if THIS socket was the bound one
+            did = self.device_by_ws.pop(connection, None)
+            if did and self.device_links.get(did) is connection:
+                self.device_links.pop(did)
+            if self.ws is connection:
+                self.ws = None
+                self.browser_ready.clear()
 
     def on_serial_bytes(self, data, did=None):
         """USB -> esptool: escape through PortManager, write to socket."""
