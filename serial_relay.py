@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v39"
+RELAY_VERSION = "v40"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1547,11 +1547,15 @@ class Relay:
         if self.ws is not None and LOOP is not None:
             asyncio.run_coroutine_threadsafe(self._ws_send(data), LOOP)
 
-    def send_json(self, obj):
+    def send_json(self, obj, did="default"):
         """Control frames are WS TEXT frames — a binary sig frame would be
         routed to the browser's serial writer (and corrupt a real flash);
-        caught by the pty loopback 2026-10-15."""
-        if self.ws is not None and LOOP is not None:
+        caught by the pty loopback 2026-10-15. v40: did-aware — sig/reopen
+        reach THE device's browser link, not whoever holds the default slot."""
+        link = self.device_links.get(did) if did and did != "default" else None
+        if link is not None and LOOP is not None:
+            asyncio.run_coroutine_threadsafe(link.send(json.dumps(obj)), LOOP)
+        elif self.ws is not None and LOOP is not None:
             asyncio.run_coroutine_threadsafe(
                 self._ws_send_text(json.dumps(obj)), LOOP)
 
