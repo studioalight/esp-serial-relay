@@ -2216,6 +2216,15 @@ async def main():
     LOOP.create_task(relay._decode_pump())
     log.info("wire phase decoder task started")
 
+    # v37.1: registry devices get their RFC2217 listeners at BOOT — a board's
+    # port must serve esptool the moment it's assigned, not only after its tab
+    # has reconnected. The browser link gates payload, not the listener.
+    try:
+        for rec in registry_list():
+            await relay._ensure_device_server(rec["id"], rec["rfcPort"])
+    except Exception as e:
+        log.warning("boot-time device servers: %s", e)
+
     rfc_server = await asyncio.start_server(
         relay.rfc2217_client, RFC_BIND, RFC_PORT)
     log.info("rfc2217 on %s:%d — esptool: rfc2217://127.0.0.1:%d",
