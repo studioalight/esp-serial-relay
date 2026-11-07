@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v36"
+RELAY_VERSION = "v37"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1763,6 +1763,16 @@ class Relay:
         existing = self.device_pms.get(did)
         if existing is not None:
             log.warning("rfc2217: device %s already has an active client — refusing new one", did)
+            # v37: a brief notice + delay before close so the client reports
+            # "port busy" instead of a misleading negotiation failure
+            try:
+                note = ("relay: device %s is busy — an esptool client is active on:%d; retry later\r\n"
+                        % (did, self.device_ports[did])).encode()
+                writer.write(note)
+                await writer.drain()
+                await asyncio.sleep(0.6)
+            except Exception:
+                pass
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -1854,10 +1864,20 @@ class Relay:
         except (OSError, asyncio.IncompleteReadError) as e:
             log.info("rfc2217 client closed: %s", e)
         finally:
-            if self.pm is pm:
-                log.info("rfc2217 client gone")
-                self.pm = None
-                self.pm_writer = None
+            # v37: release BOTH the legacy slot and this device's slot — a
+            # per-device pm registered under its did must not leak after exit
+            # (field 2026-11-07: the zombie wasn't a connection, it was the
+            # slot — next two connects refused with no TCP peer on the port).
+            for slot_id, slotted in (
+                ("default", self.pm if did == "default" else None),
+            ):
+                if slot_id == "default" and self.pm is pm:
+                    self.pm = None
+                    self.pm_writer = None
+            for sid in [k for k, v in self.device_pms.items() if v[0] is pm]:
+                self.device_pms.pop(sid, None)
+                log.info("rfc2217 slot released (device=%s)", sid)
+            log.info("rfc2217 client gone")
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -1871,11 +1891,20 @@ class Relay:
                 except Exception:
                     pass
 
-    def _client_gone(self, pm):
+    def _client_gone(self, pm, did="default"):
+        self._release_slot(pm, did)
+
+    def _release_slot(self, pm, did):
+        released = False
         if self.pm is pm:
-            log.info("rfc2217 client gone")
             self.pm = None
             self.pm_writer = None
+            released = True
+        if did != "default" and self.device_pms.get(did, (None, None))[0] is pm:
+            self.device_pms.pop(did, None)
+            released = True
+        if released:
+            log.info("rfc2217 client gone (device=%s)", did)
             try:
                 pm.connection.writer.close()
             except Exception:
