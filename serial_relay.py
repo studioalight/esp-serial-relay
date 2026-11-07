@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v43"
+RELAY_VERSION = "v44"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -714,7 +714,7 @@ $('force-dl').onclick=async ()=>{
       await port.setSignals({dataTerminalReady:false});     // IO0 release
     }catch(e){ log('pulse failed: '+e,'err'); }
     await new Promise(r=>setTimeout(r,450));
-    ok = RXWATCH.join('\n').includes('waiting for download');
+    ok = RXWATCH.join('\\n').includes('waiting for download');
     log('attempt '+attempt+' (hold '+hold+'ms): '+(ok?'ROM LATCHED — waiting for download':'no latch'), ok?'ok':'');
   }
   btn.disabled=false;
