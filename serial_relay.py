@@ -1272,7 +1272,8 @@ class WebSerialBridge:
 
     def _push_sig(self):
         self.relay.send_json({"t": "sig", "dtr": self._dtr,
-                              "rts": self._rts, "brk": self.break_condition})
+                              "rts": self._rts, "brk": self.break_condition},
+                             did=self._did)
 
     @property
     def dtr(self):
