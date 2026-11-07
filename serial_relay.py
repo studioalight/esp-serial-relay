@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v40"
+RELAY_VERSION = "v41"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1852,7 +1852,7 @@ class Relay:
                     # esptool's ROM-protocol frames take, and the phase
                     # decoder reads phases from host requests. Without this
                     # tap, tx stays 0 during a flash (field 08:28).
-                    self.monitor_tap(bytes(batch), "tx")
+                    self.monitor_tap(bytes(batch), "tx", did)  # v41: device-tag the primary esptool payload tap
                     ready = getattr(self.device_state.get(did), "ready", None) if did != "default" else None
                     if ready is not None and not ready.is_set():
                         # v24: BROWSER_WAIT_S finally consumed (was a phantom
