@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v38"
+RELAY_VERSION = "v39"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1294,7 +1294,7 @@ class WebSerialBridge:
         self._push_sig()
 
     def write(self, data):
-        self.relay.send_bytes(bytes(data))
+        self.relay.send_bytes(bytes(data), did=getattr(self, "_did", "default"))
 
     def read(self, size=1, timeout=None):
         return b""  # serial->network path is push-based (on_serial_bytes)
@@ -1536,9 +1536,14 @@ class Relay:
 
     # ---------- thread-safe senders into the loop ----------
 
-    def send_bytes(self, data):
-        """esptool -> USB: binary frame to the browser WS."""
-        self.monitor_tap(data, "tx")
+    def send_bytes(self, data, did="default"):
+        """esptool -> USB: binary frame to the browser WS. v39: did-aware."""
+        self.monitor_tap(data, "tx", did)
+        if did and did != "default":
+            link = self.device_links.get(did)
+            if link is not None and LOOP is not None:
+                asyncio.run_coroutine_threadsafe(link.send(data), LOOP)
+            return
         if self.ws is not None and LOOP is not None:
             asyncio.run_coroutine_threadsafe(self._ws_send(data), LOOP)
 
