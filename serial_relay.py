@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v41"
+RELAY_VERSION = "v42"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -398,7 +398,9 @@ PAGE = """<!doctype html>
  <p class="hint" style="margin-top:.6rem">Pick your <em>serial port</em> when the browser asks. Keep this tab open — that's it. The gateway handles the rest and shows progress in Advanced mode.</p>
 </div>
 <div class="box advanced">
- <div class="box-label" id="bridge-label">Serial bridge — bridge-Mac side</div>
+ <div class="box-label" id="bridge-label">Serial bridge — bridge-Mac side
+  <button class="mini" id="board-reset" title="local DTR/RTS reset pulse — browser-side timing" style="margin-left:.5rem">⏻ reset</button>
+ </div>
  <div class="mon-ctl">
   <button id="btn-adv">Connect USB serial (advanced)</button>
   <label style="margin-left:.4rem">baud
@@ -656,6 +658,26 @@ async function openPort(baud){
   writer=port.writable.getWriter();
   log('serial port opened at '+baud,'ok');
 }
+/* v41.2: page-local board reset — the tab owns the port, so the pulse
+   sequence runs with browser-local timing (no relay hop per transition).
+   Doubles as the test rig for the future page-local force-download button. */
+async function localBoardReset(){
+  if(!port){ log('no port open — connect first','err'); return; }
+  try{
+    await port.setSignals({dataTerminalReady:false, requestToSend:false});
+    await new Promise(r=>setTimeout(r,150));
+    await port.setSignals({dataTerminalReady:true});
+    await new Promise(r2=>setTimeout(r2,90));
+    await port.setSignals({requestToSend:true});
+    await new Promise(r3=>setTimeout(r3,120));
+    await port.setSignals({requestToSend:false});
+    await new Promise(r4=>setTimeout(r4,60));
+    await port.setSignals({dataTerminalReady:false});
+    log('board reset pulse sent (local timing)','ok');
+  }catch(e){ log('reset failed: '+e,'err'); }
+}
+$('board-reset').onclick=localBoardReset;
+
 async function closePort(){
   reading=false;
   try{ reader && await reader.cancel(); }catch(e){}
