@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v47"
+RELAY_VERSION = "v48"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -929,10 +929,11 @@ WIRE_PHASE_OPS = {
 
 
 def _set_wire_phase(r, phase, note=None):
-    r.phase = {"phase": phase, "pct": None}
+    pct = 0 if phase == "write" and note in ("begin", "begin-defl") else None
+    r.phase = {"phase": phase, "pct": pct}
     r.phase_src = "wire"
     # flushed to consoles by the monitor flush loop (async; called from tap thread)
-    r._wire_phase_frame = json.dumps({"t": "phase", "phase": phase, "pct": None})
+    r._wire_phase_frame = json.dumps({"t": "phase", "phase": phase, "pct": pct})
 
 
 def wire_decode_phase(r, data, direction):
