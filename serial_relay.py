@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v64.1"
+RELAY_VERSION = "v64.2"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1617,6 +1617,7 @@ class Relay:
         self.cap = deque(maxlen=60000)   # sized for a FULL flash (~2.4 MB tx + app rx); hex strings in RAM
         self._mon_flush_scheduled = False
         self._kick_marked = set()    # v62: devices whose kickCapability was announced this run
+        self._slot_rx = {}           # v64.2: did -> monotonic of last bytes FROM its rfc2217 client
 
     # ---------- browser side ----------
 
@@ -2114,23 +2115,48 @@ class Relay:
         """Per-device RFC2217 client: the session for this device's port."""
         existing = self.device_pms.get(did)
         if existing is not None:
-            log.warning("rfc2217: device %s already has an active client — refusing new one", did)
-            # v37: a brief notice + delay before close so the client reports
-            # "port busy" instead of a misleading negotiation failure
-            try:
-                note = ("relay: device %s is busy — an esptool client is active on:%d; retry later\r\n"
-                        % (did, self.device_ports[did])).encode()
-                writer.write(note)
-                await writer.drain()
-                await asyncio.sleep(0.6)
-            except Exception:
-                pass
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-            return
+            # v64.2 FIELD 22:35: a per-device slot could be LATCHED by a ghost —
+            # a half-open kernel socket pair from a dead client never delivers
+            # EOF, the asyncio read loop blocks forever, and every new client
+            # is refused (the default slot got a reaper in v37; per-device
+            # didn't). Preemption rule: a slot whose client has been silent for
+            # >60 s is reapable — a REAL client (esptool connect/flash, or an
+            # interactive probe writing) streams within that window.
+            prev_pm, prev_writer = existing
+            idle = time.monotonic() - self._slot_rx.get(did, 0.0)
+            if idle > 60:
+                log.warning("rfc2217: reaping stale client on %s (silent %.0fs) — new client preempting",
+                            did, idle)
+                try:
+                    prev_writer.close()
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(prev_writer.wait_closed(), timeout=2)
+                except Exception:
+                    try:
+                        prev_writer.transport.abort()
+                    except Exception:
+                        pass
+                self._release_slot(prev_pm, did)
+            else:
+                log.warning("rfc2217: device %s already has an active client — refusing new one", did)
+                # v37: a brief notice + delay before close so the client reports
+                # "port busy" instead of a misleading negotiation failure
+                try:
+                    note = ("relay: device %s is busy — an esptool client is active on:%d; retry later\r\n"
+                            % (did, self.device_ports[did])).encode()
+                    writer.write(note)
+                    await writer.drain()
+                    await asyncio.sleep(0.6)
+                except Exception:
+                    pass
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return
         await self.rfc2217_client(reader, writer, did=did)
 
     async def rfc2217_client(self, reader, writer, did="default"):
@@ -2184,6 +2210,8 @@ class Relay:
                 data = await reader.read(4096)
                 if not data:
                     break
+                # v64.2: the slot's client-liveness signal (the preemption reaper's clock)
+                self._slot_rx[did] = time.monotonic()
                 batch = bytearray()
                 for b in pm.filter(data):
                     batch += b
