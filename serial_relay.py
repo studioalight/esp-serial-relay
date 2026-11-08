@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v63.1"
+RELAY_VERSION = "v64"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1007,7 +1007,7 @@ def wire_decode_phase(r, data, direction):
     confirm but the panel derives state from requests alone.
     """
     if (direction == "rx" and getattr(r, "phase", None)
-            and r.phase.get("phase") == "verify"
+            and r.phase.get("phase") in ("verify", "done")   # v64: done also ends on reset
             and not (data[:2] == b"\xc0\x01")):
         _set_wire_phase(r, "reset")
         r._phase_scan = bytearray()
@@ -1122,6 +1122,18 @@ def wire_decode_phase(r, data, direction):
                                                   "file": fno})
         elif kind in ("end", "end-defl"):
             r._cur_file = None   # file complete; done stays in the pool
+            # v64: when the whole announced pool is written, the walk is DONE —
+            # without this the phase latched on 'verify' forever for --after
+            # no_reset sessions (no reset banner ever arrives; FIELD 21:00 the
+            # room node's page stuck on verify after its flash)
+            total_sum = sum(f["total"] for f in r._flash_files.values())
+            done_sum = sum(f["done"] for f in r._flash_files.values())
+            if total_sum and done_sum >= total_sum:
+                r.phase = {"phase": "done", "pct": 100}
+                r.phase_src = "wire"
+                r._wire_phase_frame = json.dumps({"t": "phase", "phase": "done", "pct": 100})
+                r._flash_files = {}
+                r._files_opened = 0
         elif phase == "connect":
             _set_wire_phase(r, "connect")
         elif phase == "sync":
@@ -1890,6 +1902,18 @@ class Relay:
             return
         self.counts[direction] = self.counts.get(direction, 0) + len(data)
         self.last_activity = time.time()
+        # v64: the default slot's device (the room node) gets a device view —
+        # the room node IS did='default' (its port == RFC_PORT), but the
+        # per-device payload lives in device_state keyed by did; without this
+        # its phases/counts never reach /devices.json (FIELD 20:40: its flash
+        # walk was invisible per-device)
+        dview = self.device_state.get("default")
+        if dview is None:
+            dview = _DeviceView()
+            self.device_state["default"] = dview
+        dview.counts[direction] = dview.counts.get(direction, 0) + len(data)
+        dview.last_activity = time.time()
+        wire_decode_phase(dview, data, direction)
         if self.capture_on:
             self.cap.append((time.strftime("%H:%M:%S"), direction, data.hex()))
         # rung 21: passive phase decode runs OFF the pump path — hand a copy to
@@ -2296,7 +2320,11 @@ async def http_gate(connection, request):
         rows = []
         for rec in registry_list():
             did = rec["id"]
+            # v64: a device bound to the DEFAULT slot (rfcPort == RFC_PORT) has
+            # no per-did view — its state lives under the 'default' view
             st = dstate.get(did)
+            if st is None and int(rec.get("rfcPort", 0)) == RFC_PORT:
+                st = dstate.get("default")
             rows.append({
                 **rec,
                 "link": "up" if did in dlinks else "down",
