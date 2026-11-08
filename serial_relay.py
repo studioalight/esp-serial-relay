@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v59.2"
+RELAY_VERSION = "v60"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1414,7 +1414,13 @@ class WebSerialBridge:
             log.info("esptool SET_BAUDRATE %d != tab-open %d — requesting reopen",
                      v, self._baud)
             self._baud = v
-            self.relay.send_json({"t": "reopen", "baud": v})
+            # v60: did-aware — FIELD 2026-11-08: without did this routed to the
+            # DEFAULT slot's tab (self.ws), so every raise on a non-default
+            # device port (e.g. the clock's :4003) silently went nowhere: the
+            # tab's UART stayed at sync baud while the stub switched to the
+            # raised rate -> permanent "No serial data received" after the
+            # raise. The raise has only ever worked on the default slot.
+            self.relay.send_json({"t": "reopen", "baud": v}, did=self._did)
 
     def _push_sig(self):
         self.relay.send_json({"t": "sig", "dtr": self._dtr,
