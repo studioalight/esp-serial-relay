@@ -1651,6 +1651,17 @@ class Relay:
             view.counts[direction] = view.counts.get(direction, 0) + len(data)
             view.last_activity = time.time()
             wire_decode_phase(view, data, direction)
+            # v45: the phase frame + mirror feed need the flush too — the
+            # early return used to skip it, so per-device phases/progress
+            # never reached the page (field 2026-11-08: no phases/progress
+            # on the :4003 flash).
+            if self._mon_flush_scheduled or LOOP is None:
+                return
+            self._mon_flush_scheduled = True
+            try:
+                LOOP.call_soon_threadsafe(self._mon_flush_start)
+            except RuntimeError:
+                self._mon_flush_scheduled = False
             return
         self.counts[direction] = self.counts.get(direction, 0) + len(data)
         self.last_activity = time.time()
