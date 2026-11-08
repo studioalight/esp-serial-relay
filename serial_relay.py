@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v53"
+RELAY_VERSION = "v54"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1012,12 +1012,23 @@ def wire_decode_phase(r, data, direction):
                 del b[:i]
                 return  # wait for the next chunk to complete this frame
             d = i + 9           # data starts after 0xC0 + BBHI(8)
-            num_blocks = b[d + 4] | (b[d + 5] << 8) | (b[d + 6] << 16) | (b[d + 7] << 24)
-            write_size = b[d + 8] | (b[d + 9] << 8) | (b[d + 10] << 16) | (b[d + 11] << 24)
-            offset = b[d + 12] | (b[d + 13] << 8) | (b[d + 14] << 16) | (b[d + 15] << 24)
+            # v54: SLIP-unescape the payload first — a 0xC0 inside the payload
+            # is escaped as DB DC on the wire; reading the raw (escaped) bytes
+            # shifted the fields and the sanity check rejected REAL begins
+            # (field 2026-11-08: the app begin's payload contained an escaped
+            # C0; its num_blocks/offset read as garbage; f3 stuck at 100% f2).
+            raw = bytes(b[d:d + 24])
+            pay = raw.replace(b"\xdb\xdc", b"\xc0").replace(b"\xdb\xdd", b"\xdb")
+            if len(pay) < 16:
+                del b[:i]
+                return  # wait for more chunk to unescape the full payload
+            num_blocks = pay[4] | (pay[5] << 8) | (pay[6] << 16) | (pay[7] << 24)
+            write_size = pay[8] | (pay[9] << 8) | (pay[10] << 16) | (pay[11] << 24)
+            offset = pay[12] | (pay[13] << 8) | (pay[14] << 16) | (pay[15] << 24)
             # v52: sanity — a C0 00 02/10 pattern inside COMPRESSED data can
             # look like a begin with garbage fields; reject implausible ones
             if not (1 <= num_blocks < 4096 and 256 <= write_size <= 65536 and offset < (1 << 26)):
+                log.info("DECODER rejected begin: nb=%d ws=%d off=%s", num_blocks, write_size, hex(offset))
                 i = i + 9
                 continue
             total = num_blocks * write_size
@@ -1057,13 +1068,19 @@ def wire_decode_phase(r, data, direction):
             _set_wire_phase(r, "erase")   # key on the PHASE — the table's kind for erase is None
         elif phase == "verify":
             _set_wire_phase(r, "verify")
-        # v52: jump past the WHOLE declared frame (header + ln + trailing C0) —
-        # scanning INSIDE the body let compressed data's random C0 00 patterns
-        # re-fire begins with garbage offsets, killing the block accumulation
-        # (the f3-stuck-at-0 bug). Escapes may inflate the wire form; the scan
-        # resyncs at the next C0 boundary if the jump lands short.
-        if kind is not None and ln is not None:
-            i = i + 9 + ln + 1
+        # v54: jump to the NEXT frame boundary on the WIRE — the declared ln is
+        # the UNESCAPED length, but the wire body is inflated by SLIP escapes
+        # (C0 -> DB DC, DB -> DB DD); jumping 9+ln+1 lands mid-body when escapes
+        # exist, and landed-past frames were silently skipped (v53 replay: the
+        # whole walk collapsed to just 'verify'). Scan for the true terminator.
+        if kind is not None:
+            j = i + 9
+            end = min(n, j + ln + 64)
+            while j < end:
+                if b[j] == 0xC0:
+                    break
+                j += 1
+            i = j + 1 if j < end else i + 9
         else:
             i = i + 9
     del b[:max(0, min(i, len(b)) - 4)]  # retain possible split-frame tail
