@@ -21,6 +21,11 @@ class R:
     _flash_done = 0
     _phase_scan = bytearray()
     _wire_phase_frame = None
+    _flash_files = {}     # v49 decoder state (multi-file walk)
+    _cur_file = None
+    _files_opened = 0
+    _reset_latched = False
+    _reset_disarmed = False
 
 
 def replay(path):
@@ -30,9 +35,13 @@ def replay(path):
     with open(path) as f:
         for line in f:
             parts = line.split()
-            if len(parts) != 3:
+            # dump lines are "ts dir hex" (legacy) or "ts dir did hex" (v45+ per-device)
+            if len(parts) == 4:
+                ts, d, hx = parts[0], parts[1], parts[3]
+            elif len(parts) == 3:
+                ts, d, hx = parts
+            else:
                 continue
-            ts, d, hx = parts
             try:
                 chunk = bytes.fromhex(hx)
             except ValueError:

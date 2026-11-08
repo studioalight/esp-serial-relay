@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v64"
+RELAY_VERSION = "v64.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1006,14 +1006,39 @@ def wire_decode_phase(r, data, direction):
     Only the HOST side (tx) drives phases; device acks (rx, resp byte 0x01)
     confirm but the panel derives state from requests alone.
     """
-    if (direction == "rx" and getattr(r, "phase", None)
-            and r.phase.get("phase") in ("verify", "done")   # v64: done also ends on reset
-            and not (data[:2] == b"\xc0\x01")):
-        _set_wire_phase(r, "reset")
-        r._phase_scan = bytearray()
-        r._reset_latched = True
-        r._flash_total = None
-        return
+    if direction == "rx" and getattr(r, "phase", None) \
+            and r.phase.get("phase") in ("verify", "done"):
+        # v64: the walk ENDS on a reset banner — but only a real one: app-level
+        # chatter (the room node streams log lines forever) previously re-fired
+        # 'reset' on every chunk. Require banner-ish ROM bytes; the MD5 ack is
+        # the terminal check that follows.
+        if data[:2] == b"\xc0\x01\x13":
+            pass
+        elif (b"boot:0x" in data or b"ESP-ROM" in data or b"rst:0x" in data) \
+                and b"DOWNLOAD" not in data:
+            _set_wire_phase(r, "reset")
+            r._phase_scan = bytearray()
+            r._reset_latched = True
+            r._flash_total = None
+            return
+    # v64: the walk's TERMINAL transition — the MD5 ack (C0 01 13, status 0 byte 4)
+    # with the announced pool fully written. esptool verifies AFTER each
+    # FLASH_END, so the last wire frame of a walk is the MD5 verify; its ack
+    # is 'done'. (FLASH_END fires mid-walk per file — verify follows.)
+    if direction == "rx" and data[:3] == b"\xc0\x01\x13":
+        # frame: C0 01 13 len:2le chk:4le md5[32] status[4] C0 — status OK is the
+        # four 00 bytes before the terminator
+        term = data.find(b"\xc0", 4)
+        ok_status = term > 5 and data[term-4:term-1] == b"\x00\x00\x00"
+        total_sum = sum(f["total"] for f in getattr(r, "_flash_files", {}).values())
+        done_sum = sum(f["done"] for f in getattr(r, "_flash_files", {}).values())
+        if total_sum and done_sum >= total_sum and ok_status:
+            r.phase = {"phase": "done", "pct": 100}
+            r.phase_src = "wire"
+            r._wire_phase_frame = json.dumps({"t": "phase", "phase": "done", "pct": 100})
+            r._flash_files = {}
+            r._files_opened = 0
+            r._cur_file = None
     # reset latch: once the device reset (boot text after verify), teardown
     # frames (DEFL_END, zero-block FLASH_BEGIN) would re-fire 'write' — the
     # panel would end on 'write' although the flash finished. Ignore all
@@ -1122,18 +1147,9 @@ def wire_decode_phase(r, data, direction):
                                                   "file": fno})
         elif kind in ("end", "end-defl"):
             r._cur_file = None   # file complete; done stays in the pool
-            # v64: when the whole announced pool is written, the walk is DONE —
-            # without this the phase latched on 'verify' forever for --after
-            # no_reset sessions (no reset banner ever arrives; FIELD 21:00 the
-            # room node's page stuck on verify after its flash)
-            total_sum = sum(f["total"] for f in r._flash_files.values())
-            done_sum = sum(f["done"] for f in r._flash_files.values())
-            if total_sum and done_sum >= total_sum:
-                r.phase = {"phase": "done", "pct": 100}
-                r.phase_src = "wire"
-                r._wire_phase_frame = json.dumps({"t": "phase", "phase": "done", "pct": 100})
-                r._flash_files = {}
-                r._files_opened = 0
+            # v64 note: 'done' is NOT fired here — esptool verifies AFTER this
+            # frame (MD5), so the terminal transition happens at the MD5 ack
+            # (fired per file mid-walk would bounce done→write→done).
         elif phase == "connect":
             _set_wire_phase(r, "connect")
         elif phase == "sync":
