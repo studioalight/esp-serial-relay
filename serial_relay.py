@@ -650,6 +650,63 @@ function openMon(){
     monSock.onclose=()=>{ setTimeout(openMon,monBackoff=Math.min(monBackoff*2,8000)); };
   }catch(e){}
 }
+/* v58: the /relay ws message handler, module scope — the self-healing reconnect references it */
+function wsMsgHandler(ev){
+  if(typeof ev.data==='string'){
+    let m=null; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+    if(m.t==='device-bound'){
+      const dt=$('bridge-device-text');
+      if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
+      const pn=$('procedure-line');
+      const proc=$('procedure-note');
+      if(pn) pn.textContent='rfc2217://'+location.hostname+':'+m.rfcPort;
+      else {
+        // live URL appended to the procedure text (kept as a styled line)
+        if(proc && !proc.querySelector('.proc-url')){
+          const u=document.createElement('span'); u.className='proc-url';
+          proc.appendChild(u);
+        }
+        const u=proc && proc.querySelector('.proc-url');
+        if(m.rfcBind && m.rfcBind!=='127.0.0.1' && m.rfcBind!=='::1'){
+          if(u) u.innerHTML='RFC2217 binds <b>'+(m.rfcBind==='0.0.0.0'?'all interfaces':'the tailnet interface ('+m.rfcBind+')')+'</b> — esptool from the gateway or any tailnet machine: <code>rfc2217://'+m.rfcBind+':'+m.rfcPort+'</code>';
+        } else if(u){
+          u.innerHTML='esptool on the gateway: <code>rfc2217://127.0.0.1:'+m.rfcPort+'</code>'+
+          '<br>(RFC2217 loopback-only in this mode — set <b>rfc2217 bind</b> to the tailnet interface in Settings to flash from other shores)';
+        }
+      }
+    }
+    else if(m.t==='sig'){
+      try{ await port.setSignals({
+        dataTerminalReady: m.dtr!==undefined ? !!m.dtr : undefined,
+        requestToSend:     m.rts!==undefined ? !!m.rts : undefined,
+        break:             m.brk!==undefined ? !!m.brk : undefined }); }
+      catch(e){ log('setSignals: '+e,'bad'); }
+    } else if(m.t==='reopen'){
+      log('reopen at '+m.baud+'\u2026');
+      reading=false;
+      try{ reader && await reader.cancel(); }catch(e){}
+      try{ reader && reader.releaseLock(); }catch(e){}
+      try{ writer && writer.releaseLock(); }catch(e){}
+      await port.close();
+      await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
+      writer=port.writable.getWriter();
+      log('reopened at '+m.baud,'ok');
+      pumpReads(); pollSignals();
+    }
+  } else {
+    const u8=new Uint8Array(ev.data);
+    monAdd(u8,'tx');
+    try{ await writer.write(u8); }catch(e){ log('write: '+e,'bad'); }
+  }
+};
+/* v58: SELF-HEALING relay link — on ws drop, retry the WebSocket with
+   backoff while the Web Serial port is held. If the daemon comes back,
+   the serial bridge re-attaches on the hello (the daemon re-binds at
+   hello and reuses the held port). Only give up if the port is gone. */
+
+/* the assignment's tail moved into the reconnect block */
+}
+
 const wsUrl=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/relay';
 openMon();
 
@@ -772,55 +829,27 @@ async function connect(){
         devInfo={vendorId:i.usbVendorId, productId:i.usbProductId,
                  serialNumber:i.serialNumber||null}; }catch(e){}
       ws.send(JSON.stringify({t:'hello',baud, device:devInfo})); setStateEx('link up','up'); };
-    ws.onmessage=async ev=>{
-      if(typeof ev.data==='string'){
-        let m=null; try{ m=JSON.parse(ev.data); }catch(e){ return; }
-        if(m.t==='device-bound'){
-          const dt=$('bridge-device-text');
-          if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
-          const pn=$('procedure-line');
-          const proc=$('procedure-note');
-          if(pn) pn.textContent='rfc2217://'+location.hostname+':'+m.rfcPort;
-          else {
-            // live URL appended to the procedure text (kept as a styled line)
-            if(proc && !proc.querySelector('.proc-url')){
-              const u=document.createElement('span'); u.className='proc-url';
-              proc.appendChild(u);
-            }
-            const u=proc && proc.querySelector('.proc-url');
-            if(m.rfcBind && m.rfcBind!=='127.0.0.1' && m.rfcBind!=='::1'){
-              if(u) u.innerHTML='RFC2217 binds <b>'+(m.rfcBind==='0.0.0.0'?'all interfaces':'the tailnet interface ('+m.rfcBind+')')+'</b> — esptool from the gateway or any tailnet machine: <code>rfc2217://'+m.rfcBind+':'+m.rfcPort+'</code>';
-            } else if(u){
-              u.innerHTML='esptool on the gateway: <code>rfc2217://127.0.0.1:'+m.rfcPort+'</code>'+
-              '<br>(RFC2217 loopback-only in this mode — set <b>rfc2217 bind</b> to the tailnet interface in Settings to flash from other shores)';
-            }
-          }
-        }
-        else if(m.t==='sig'){
-          try{ await port.setSignals({
-            dataTerminalReady: m.dtr!==undefined ? !!m.dtr : undefined,
-            requestToSend:     m.rts!==undefined ? !!m.rts : undefined,
-            break:             m.brk!==undefined ? !!m.brk : undefined }); }
-          catch(e){ log('setSignals: '+e,'bad'); }
-        } else if(m.t==='reopen'){
-          log('reopen at '+m.baud+'\u2026');
-          reading=false;
-          try{ reader && await reader.cancel(); }catch(e){}
-          try{ reader && reader.releaseLock(); }catch(e){}
-          try{ writer && writer.releaseLock(); }catch(e){}
-          await port.close();
-          await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
-          writer=port.writable.getWriter();
-          log('reopened at '+m.baud,'ok');
-          pumpReads(); pollSignals();
-        }
-      } else {
-        const u8=new Uint8Array(ev.data);
-        monAdd(u8,'tx');
-        try{ await writer.write(u8); }catch(e){ log('write: '+e,'bad'); }
-      }
+    ws.onmessage=wsMsgHandler;    ws.onclose=()=>{
+      reading=false;
+      const retry=()=>{
+        if(!port){ setStateEx('link down \u2014 port released, reconnect to resume','down'); return; }
+        setStateEx('link down \u2014 self-healing\u2026','down');
+        log('relay ws down \u2014 self-healing\u2026','');
+        try{ ws = new WebSocket(wsUrl); ws.binaryType='arraybuffer';
+             ws.onopen = ()=>{ log('relay ws re-attached \u2014 resuming serial bridge','ok');
+               setStateEx('link up','up'); const baud=parseInt(($('baud')?$('baud').value:'115200'),10)||115200;
+               let devInfo=null; try{ const ii=port.getInfo();
+                 devInfo={vendorId:ii.usbVendorId, productId:ii.usbProductId, serialNumber:ii.serialNumber||null}; }catch(e){}
+               ws.send(JSON.stringify({t:'hello',baud, device:devInfo}));
+               reading = true; pumpReads(); };
+             ws.onmessage = wsMsgHandler;
+             ws.onclose = ()=>{ setTimeout(retry, 1500); };
+             ws.onerror = ()=>{};
+             reading = true; pumpReads();
+        }catch(e){ setTimeout(retry, 2500); }
+      };
+      setTimeout(retry, 500);
     };
-    ws.onclose=()=>{ log('relay link closed','bad'); setStateEx('link down \u2014 reload the page and reconnect','down'); reading=false; };
     pumpReads(); pollSignals();
   }catch(e){
     log('connect: '+(e.message||e.name||e),'bad');
