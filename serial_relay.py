@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v51"
+RELAY_VERSION = "v52"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2047,8 +2047,10 @@ async def http_gate(connection, request):
         r = relay_state.get("relay")
         lines = []
         if r is not None:
-            for ts, d, hx in list(r.cap):
-                lines.append(f"{ts} {d} {hx}")
+            for row in list(r.cap):
+                ts, d, hx = row[0], row[1], row[2]
+                did = row[3] if len(row) > 3 else "default"
+                lines.append(f"{ts} {d} {did} {hx}")
         body = ("\n".join(lines) + "\n").encode()
         return Response(200, "OK", Headers([
             ("Content-Type", "text/plain; charset=utf-8"),
