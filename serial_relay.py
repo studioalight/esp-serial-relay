@@ -651,7 +651,7 @@ function openMon(){
   }catch(e){}
 }
 /* v58: the /relay ws message handler, module scope — the self-healing reconnect references it */
-function wsMsgHandler(ev){
+async function wsMsgHandler(ev){
   if(typeof ev.data==='string'){
     let m=null; try{ m=JSON.parse(ev.data); }catch(e){ return; }
     if(m.t==='device-bound'){
@@ -703,9 +703,6 @@ function wsMsgHandler(ev){
    backoff while the Web Serial port is held. If the daemon comes back,
    the serial bridge re-attaches on the hello (the daemon re-binds at
    hello and reuses the held port). Only give up if the port is gone. */
-
-/* the assignment's tail moved into the reconnect block */
-}
 
 const wsUrl=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/relay';
 openMon();
