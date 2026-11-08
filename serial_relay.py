@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v63"
+RELAY_VERSION = "v63.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1435,7 +1435,9 @@ class WebSerialBridge:
         # flight on this device (a mid-flash re-baud would kill the walk).
         real = None
         try:
-            real = self.relay.tab_baud.get(self._did)
+            # self.relay is the WebSerialBridge; the Relay hangs off it
+            _relay = getattr(self.relay, "relay", self.relay)
+            real = _relay.tab_baud.get(self._did)
         except Exception:
             real = None
         sync_needed = False
