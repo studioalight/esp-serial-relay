@@ -45,7 +45,7 @@ def flashonce(baud):
         capture_output=True, text=True, timeout=900)
     dt = time.time() - t0
     out = (p.stdout + p.stderr).strip()
-    ver = "hash verified" in out.lower()
+    ver = "hash of data verified" in out.lower()
     print(f"baud {baud:>7} (stub): {dt:6.1f}s  verified={ver}", flush=True)
     for line in out.splitlines()[-6:]: print("  ", line.strip()[:110], flush=True)
     dance_to_115200()
