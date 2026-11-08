@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v50"
+RELAY_VERSION = "v51"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1031,18 +1031,17 @@ def wire_decode_phase(r, data, direction):
             r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": 0,
                                               "file": r._files_opened, "label": r.phase["label"]})
         elif kind in ("block", "block-defl", "data-defl", "data"):
-            if r._cur_file is not None and r._flash_total:
-                rec = r._flash_files.get(r._cur_file)
-                if rec is None:
-                    rec = {"total": r._flash_total, "done": 0}
-                    r._flash_files[r._cur_file] = rec
+            rec = r._flash_files.get(r._cur_file) if r._cur_file is not None else None
+            if rec is not None:
                 rec["done"] += ln
                 done_sum = sum(f["done"] for f in r._flash_files.values())
                 total_sum = sum(f["total"] for f in r._flash_files.values())
                 pct = min(100, int(100.0 * done_sum / total_sum)) if total_sum else 0
-                r.phase = {"phase": "write", "pct": pct}
+                fno = getattr(r, "_files_opened", 1)
+                r.phase = {"phase": "write", "pct": pct, "file": fno}
                 r.phase_src = "wire"
-                r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": pct})
+                r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": pct,
+                                                  "file": fno})
         elif kind in ("end", "end-defl"):
             r._cur_file = None   # file complete; done stays in the pool
         elif phase == "connect":
@@ -1658,6 +1657,8 @@ class Relay:
                 self.device_state[did] = view
             view.counts[direction] = view.counts.get(direction, 0) + len(data)
             view.last_activity = time.time()
+            if self.capture_on:
+                self.cap.append((time.strftime("%H:%M:%S"), direction, data.hex(), did))
             wire_decode_phase(view, data, direction)
             # v45: the phase frame + mirror feed need the flush too — the
             # early return used to skip it, so per-device phases/progress
