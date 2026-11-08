@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v64.2"
+RELAY_VERSION = "v65"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -161,6 +161,16 @@ def _next_rfc_port(d):
         p += 2
     return p
 
+def _safe_next_port(d):
+    """v65: first free device port that is NOT infrastructure. Device ports
+    live at 4004+ (RFC_PORT 4001 = legacy default slot; WS_PORT 4002 = page/WS
+    + the Tailscale-serve upstream — both forbidden by the port discipline)."""
+    used = {int(rec.get("rfcPort", 0)) for rec in d.values()}
+    p = max(4004, RFC_PORT + 3)
+    while p in used or p in (WS_PORT, RFC_PORT):
+        p += 1
+    return p
+
 def registry_upsert(info):
     """Get-or-create a device record from a Web Serial hello's info dict.
     Returns (id, record). Identity: serialNumber if present, else vid/pid + a
@@ -204,6 +214,16 @@ def registry_rename(did, label=None, rfc_port=None):
         v = int(rfc_port)
         if not (1 <= v <= 65535):
             raise ValueError("rfcPort out of range")
+        # v65 PORT DISCIPLINE — never allow a device port onto the infrastructure:
+        # - WS_PORT (4002): the page/WS port + Tailscale-serve's persistent
+        #   upstream lives here; the proxy's connection would be ACCEPTED as
+        #   an rfc2217 client (FIELD 22:35: the boot-time "ghost connector")
+        # - RFC_PORT (4001): the legacy default slot — rename-claiming it would
+        #   collide with the default device's session
+        if v in (WS_PORT, RFC_PORT):
+            raise ValueError(
+                "rfcPort %d is reserved (%d = ws/page — tailscale-serve upstream; "
+                "%d = default slot). Device ports live at 4004+" % (v, WS_PORT, RFC_PORT))
         for other_id, other in d.items():
             if other_id != did and int(other.get("rfcPort", 0)) == v:
                 raise ValueError(f"rfcPort {v} already assigned to {other_id}")
@@ -2635,6 +2655,36 @@ async def main():
     # v37.1: registry devices get their RFC2217 listeners at BOOT — a board's
     # port must serve esptool the moment it's assigned, not only after its tab
     # has reconnected. The browser link gates payload, not the listener.
+    # v65: auto-heal first — any registry row squatting on the infrastructure
+    # ports (WS 4002 / default 4001) moves to the first free port at 4004+
+    # (the tailscale-serve ghost class is closed at the data level, not just
+    # the rename API).
+    try:
+        moved = []
+        d = _load_devices()
+        # count port occurrences — a collision exists when a port is claimed
+        # by more than one record, and infrastructure ports are bad on anyone
+        counts = {}
+        for rec in d.values():
+            counts[int(rec.get("rfcPort", 0))] = counts.get(int(rec.get("rfcPort", 0)), 0) + 1
+        for rec in sorted(d.values(), key=lambda x: x.get("firstSeen", "")):
+            port = int(rec.get("rfcPort", 0))
+            bad = port in (WS_PORT, RFC_PORT)
+            # the OLDest record keeps a shared port (it is likely the original
+            # owner); later records yield to the pool
+            bad = port in (WS_PORT, RFC_PORT)
+            if bad:
+                old = port
+                free = _safe_next_port(d)
+                rec["rfcPort"] = free
+                counts[port] = counts.get(port, 1) - 1
+                moved.append((rec["id"], old, free))
+        if moved:
+            _save_devices(d)
+            for did, old, new in moved:
+                log.warning("PORT AUTO-HEAL: device %s moved %d -> %d (infrastructure port)", did, old, new)
+    except Exception as e:
+        log.warning("port auto-heal skipped: %s", e)
     try:
         for rec in registry_list():
             await relay._ensure_device_server(rec["id"], rec["rfcPort"])
