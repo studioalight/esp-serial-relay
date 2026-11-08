@@ -1821,7 +1821,6 @@ class Relay:
                                  "injecting KICK (esptool's connect retries finish the entry)", did)
                         self.send_bytes(b"KICK\n", did=did)
             if self.capture_on:
-            if self.capture_on:
                 self.cap.append((time.strftime("%H:%M:%S"), direction, data.hex(), did))
             wire_decode_phase(view, data, direction)
             # v45: the phase frame + mirror feed need the flush too — the
