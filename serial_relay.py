@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v61"
+RELAY_VERSION = "v62"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1505,6 +1505,11 @@ class _DeviceView:
         self.cap = None
         self.counts = {"rx": 0, "tx": 0}
         self.last_activity = None
+        # v62: kick-capable entry state (auto-KICK for app-mode devices)
+        self.kick_seen = None       # last tx "KICK\n" (monotonic)
+        self.autokick = None        # last AUTO-injected KICK (rate limit)
+        self.download_until = None  # chip presumed in download until (armed on KICK,
+                                    # cleared on an rx boot banner to SPI_FAST_FLASH_BOOT)
 
 
 class Relay:
@@ -1542,6 +1547,7 @@ class Relay:
         self.capture_on = False
         self.cap = deque(maxlen=60000)   # sized for a FULL flash (~2.4 MB tx + app rx); hex strings in RAM
         self._mon_flush_scheduled = False
+        self._kick_marked = set()    # v62: devices whose kickCapability was announced this run
 
     # ---------- browser side ----------
 
@@ -1766,6 +1772,55 @@ class Relay:
                 self.device_state[did] = view
             view.counts[direction] = view.counts.get(direction, 0) + len(data)
             view.last_activity = time.time()
+            # ---- v62: KICK-capable auto-entry ----
+            # FIELD 19:30: the classic reset dance through the browser sig path
+            # cannot strap download mode on such boards (IO0 at reset never
+            # takes; the chip boots boot:0x8 every time). KICK-capable firmware
+            # solves entry in software instead. Learn: a successful KICK (app
+            # acks with 'entering download mode') marks the device. Then every
+            # app-mode connect attempt (host SYNC while not in download) gets
+            # ONE auto-injected KICK — esptool's retry dots handle the rest,
+            # so a plain default-reset flash works like any dev board.
+            now = time.time()
+            if direction == "tx" and (data.strip() == b"KICK"):
+                view.kick_seen = now
+                view.download_until = now + 120  # KICK lands the chip in download
+                log.info("KICK observed on %s — download entry armed", did)
+            if direction == "rx" and view.kick_seen is not None and now - view.kick_seen < 8:
+                if (b"entering download mode" in data or b"waiting for download" in data) \
+                        and did not in self._kick_marked:
+                    d = _load_devices()
+                    rec = d.get(did)
+                    if rec is not None:
+                        rec["kickCapable"] = True
+                        _save_devices(d)
+                        self._kick_marked.add(did)
+                        log.info("AUTO-ENTRY: %s is kick-capable (learned from a successful KICK round-trip) — "
+                                 "future app-mode connects are auto-kicked", did)
+            if direction == "rx" and len(data) >= 2 and data == data.lower():
+                pass  # (banner matching below is case-forgiving by construction)
+            if direction == "rx" and view.download_until is not None:
+                if b"SPI_FAST_FLASH_BOOT" in data or b"boot:0x" in data and b"DOWNLOAD" not in data:
+                    # the chip reset back into app (recovery pulse / watchdog) — disarm
+                    view.download_until = None
+                    view.kick_seen = None
+                    log.info("boot banner says APP on %s — download entry disarmed", did)
+                elif b"DOWNLOAD" in data:
+                    view.download_until = max(view.download_until, now + 300)
+            if direction == "tx" and data[:3] == b"\xc0\x00\x08":  # host SYNC
+                armed = view.download_until is not None and now < view.download_until
+                in_flash = (view.phase or {}).get("phase") in ("write", "erase", "verify")
+                rate_ok = view.autokick is None or now - view.autokick > 10
+                if not armed and not in_flash and rate_ok:
+                    rec = _load_devices().get(did)
+                    if rec and rec.get("kickCapable") and did in self.device_links:
+                        view.autokick = now
+                        view.kick_seen = now
+                        view.download_until = now + 300
+                        log.info("AUTO-KICK: %s in app mode while a host is syncing — "
+                                 "injecting KICK (esptool's connect retries finish the entry)", did)
+                        self.send_bytes(b"KICK\n", did=did)
+            if self.capture_on:
             if self.capture_on:
                 self.cap.append((time.strftime("%H:%M:%S"), direction, data.hex(), did))
             wire_decode_phase(view, data, direction)
