@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v62"
+RELAY_VERSION = "v63"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -694,6 +694,7 @@ async function wsMsgHandler(ev){
       let updated=false;
       if(port && port.update){
         try{ await port.update({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'}); updated=true;
+             curBaud=m.baud;
              log('baud updated to '+m.baud+' (live)','ok');
              try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'update', ok:true})); }catch(e){} }
         catch(e){
@@ -707,6 +708,7 @@ async function wsMsgHandler(ev){
         try{ writer && writer.releaseLock(); }catch(e){}
         await port.close();
         await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
+        curBaud=m.baud;
         writer=port.writable.getWriter();
         log('reopened at '+m.baud,'ok');
         try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'reopen', ok:true})); }catch(e){}
@@ -731,9 +733,13 @@ openMon();
    reader/writer zombies across link changes (field: TX path down). */
 let ws=null, port=null, reader=null, writer=null, reading=false, sigPoll=false;
 
+let curBaud=0;   // v63: the tab's REAL uart rate — open at openPort, live at every
+                 // update/reopen; carried in hello so the daemon can sync-reopen
+                 // a stale rate instead of deadlocking
 async function openPort(baud){
   port=await navigator.serial.requestPort();
   await port.open({baudRate:baud, dataBits:8, stopBits:1, parity:'none'});
+  curBaud=baud;
   writer=port.writable.getWriter();
   log('serial port opened at '+baud,'ok');
 }
@@ -855,7 +861,7 @@ async function connect(){
       try{ const i=port.getInfo();
         devInfo={vendorId:i.usbVendorId, productId:i.usbProductId,
                  serialNumber:i.serialNumber||null}; }catch(e){}
-      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, device:devInfo})); setStateEx('link up','up'); };
+      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, device:devInfo})); setStateEx('link up','up'); };
     ws.onmessage=wsMsgHandler;    ws.onclose=()=>{
       reading=false;
       const retry=()=>{
@@ -867,7 +873,7 @@ async function connect(){
                setStateEx('link up','up'); const baud=parseInt(($('baud')?$('baud').value:'115200'),10)||115200;
                let devInfo=null; try{ const ii=port.getInfo();
                  devInfo={vendorId:ii.usbVendorId, productId:ii.usbProductId, serialNumber:ii.serialNumber||null}; }catch(e){}
-               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, device:devInfo}));
+               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, device:devInfo}));
                reading = true; pumpReads(); };
              ws.onmessage = wsMsgHandler;
              ws.onclose = ()=>{ setTimeout(retry, 1500); };
@@ -1420,10 +1426,37 @@ class WebSerialBridge:
         # the read pump). Field flow 2026-10-15: 115200 -> whatever esptool
         # sets (--baud on flash).
         v = int(v)
-        if v != self._baud:
-            log.info("esptool SET_BAUDRATE %d != tab-open %d — requesting reopen",
-                     v, self._baud)
+        # v63: detect a stale tab uart — a fresh PM assumes the open rate, but
+        # the physical tab may sit at the rate a previous raise left it at.
+        # FIELD 19:30: that desync deadlocked every post-raise client (sync at
+        # 115200 into a 230400-clocked tab, no reopen ever fired — PM._baud
+        # matched the request by coincidence). Track the tab's acked baud and
+        # sync-reopen on mismatch. Guard: never while a flash session is in
+        # flight on this device (a mid-flash re-baud would kill the walk).
+        real = None
+        try:
+            real = self.relay.tab_baud.get(self._did)
+        except Exception:
+            real = None
+        sync_needed = False
+        if real is not None and v != real:
+            if v != self._baud:
+                sync_needed = False   # the explicit mismatch below already fires
+            else:
+                view = self.relay.device_state.get(self._did) if self._did != "default" else None
+                in_flash = (getattr(view, "phase", None) or {}).get("phase") in (
+                    "write", "erase", "verify") if view is not None else False
+                if not in_flash and (time.time() - getattr(self, "_last_sync_req", 0)) > 1.5:
+                    sync_needed = True
+        if v != self._baud or sync_needed:
+            if v != self._baud:
+                log.info("esptool SET_BAUDRATE %d != tab-open %d — requesting reopen",
+                         v, self._baud)
+            else:
+                log.info("esptool SET_BAUDRATE %d == tab-open %d but the tab uart is at %d — "
+                         "sync-reopen (v63 stale-rate killer)", v, self._baud, real)
             self._baud = v
+            self._last_sync_req = time.time()
             # v60: did-aware — FIELD 2026-11-08: without did this routed to the
             # DEFAULT slot's tab (self.ws), so every raise on a non-default
             # device port (e.g. the clock's :4003) silently went nowhere: the
@@ -1431,6 +1464,8 @@ class WebSerialBridge:
             # raised rate -> permanent "No serial data received" after the
             # raise. The raise has only ever worked on the default slot.
             self.relay.send_json({"t": "reopen", "baud": v}, did=self._did)
+        else:
+            self._baud = v
 
     def _push_sig(self):
         self.relay.send_json({"t": "sig", "dtr": self._dtr,
@@ -1525,6 +1560,10 @@ class Relay:
         self.device_ports = {}      # deviceId -> assigned rfcPort (from registry)
         self.device_pms = {}        # deviceId -> (pm, writer)
         self.device_servers = {}    # rfcPort -> asyncio.Server
+        self.tab_baud = {}          # v63: deviceId -> the tab's REAL UART baud
+                                    # (hello curBaud + 'baud' acks on raises) —
+                                    # lets a fresh PM detect a stale open rate
+                                    # and sync-reopen instead of deadlocking
         self.pm = None              # active PortManager (one esptool client)
         self.pm_writer = None        # its stream writer
         self.browser_ready = asyncio.Event()
@@ -1621,6 +1660,13 @@ class Relay:
                     m = json.loads(msg)
                     if m.get("t") == "hello":
                         log.info("BROWSER hello: baud=%s (port currently open)", m.get("baud"))
+                        # v63: the tab's REAL uart rate (curBaud from v63 JS;
+                        # older tabs report their open baud — best effort).
+                        _bid = self.device_by_ws.get(connection) or "default"
+                        if m.get("curBaud"):
+                            self.tab_baud[_bid] = int(m["curBaud"])
+                        elif isinstance(m.get("baud"), (int, float)) and _bid not in self.tab_baud:
+                            self.tab_baud[_bid] = int(m["baud"])
                         # v59.2: stale-JS observability — the tab reports the page
                         # version it came from; a mismatch means it survived one or
                         # more daemon upgrades via self-heal (the raise-kills-link
@@ -1681,6 +1727,11 @@ class Relay:
                         log.info("◆ TAB BAUD ACK: %s @%s ok=%s %s",
                                  m.get("path"), m.get("baud"), m.get("ok"),
                                  ("err=" + str(m.get("err"))) if m.get("err") else "")
+                        # v63: acked raises/opens are authoritative for the tab's
+                        # real uart rate
+                        _bid = self.device_by_ws.get(connection) or "default"
+                        if m.get("ok") and isinstance(m.get("baud"), (int, float)):
+                            self.tab_baud[_bid] = int(m["baud"])
                     if m.get("t") == "sig" and self.pm is not None:
                         b = self.pm.serial
                         b.cts = bool(m.get("cts", True))
