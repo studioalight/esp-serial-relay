@@ -66,6 +66,13 @@ so labels survive restarts).
 
 - **Device ports are assigned**, not user-chosen: base 4001 + 2·index
   (4001, 4003, 4005, …) configurable base.
+- **v65 PORT DISCIPLINE:** infrastructure ports are reserved — never assign a
+  device to **4002** (page/WS + Tailscale-serve's persistent upstream: the
+  proxy's connection gets accepted as an rfc2217 client — the boot-time
+  "ghost connector", field-proven 2026-11-08) or to a port claimed by another
+  device. `registry_rename` rejects 4001/4002; the boot auto-heal moves any
+  registry row squatting on the infrastructure ports. New device ports are
+  safest at **4004+**.
 - The **first/only device keeps 4001** — backward compatible with all current
   flash tooling (`rfc2217://127.0.0.1:4001`).
 - Assignment is persisted in the device-registry JSON (device → rfcPort) so a

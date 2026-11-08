@@ -170,6 +170,12 @@ the release tgz is the complete artifact.
 - Gateway 443 (managed serve) vs relay 8444 (added route) are separate mechanisms
 - `--after no_reset` leaves ESP32 boards in download mode — kick with a hard reset
 - A zombie watcher can hold RFC2217 port 4001 — kill the orphan, then re-bootstrap
+- **v65 port discipline:** device ports live at **4004+**. Port **4002** is forbidden for
+  devices — it carries the page/WS AND Tailscale-serve's persistent upstream, whose
+  connection the relay would accept as an (rfc2217) client (the "boot-time ghost").
+  `registry_rename` enforces it; boot auto-heal moves offenders.
+- Native-USB boards (Espressif vid 0x303a) flash with `--before usb_reset`; CH343/CH340
+  boards with kicker firmware auto-enter via the relay's learned auto-KICK (v62+)
 - Zero bytes at :4001 means the browser tab lost the port — reload the tab
 - Flash sizes: read offsets from the project's `build/flash_args`, never memory
 
