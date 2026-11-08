@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v59.1"
+RELAY_VERSION = "v59.2"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -465,6 +465,7 @@ PAGE = """<!doctype html>
 </div>
 <footer>serial-relay %%RELAY_VERSION%% · gateway daemon · <b>Studio Alight</b> 2026 · <a href="/dashboard" style="color:var(--color-mute)">status dashboard</a></footer>
 <script>
+const PAGE_V='%%RELAY_VERSION%%';
 const $=id=>document.getElementById(id);
 const log=(m,cls)=>{const d=document.createElement('div');if(cls)d.className=cls;d.textContent=m;$('log').append(d);$('log').scrollTop=$('log').scrollHeight;};
 function setStateEx(t,cls){
@@ -654,6 +655,10 @@ function openMon(){
 async function wsMsgHandler(ev){
   if(typeof ev.data==='string'){
     let m=null; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+    if(m.t==='reload-needed'){
+      log('relay is now '+m.served+' — this tab runs '+PAGE_V+' \u2014 reload the page (between flashes!) to update','bad');
+      setStateEx('relay '+m.served+' — tab at '+PAGE_V+' — outdated (reload between flashes)','down');
+    }
     if(m.t==='device-bound'){
       const dt=$('bridge-device-text');
       if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
@@ -840,7 +845,7 @@ async function connect(){
       try{ const i=port.getInfo();
         devInfo={vendorId:i.usbVendorId, productId:i.usbProductId,
                  serialNumber:i.serialNumber||null}; }catch(e){}
-      ws.send(JSON.stringify({t:'hello',baud, device:devInfo})); setStateEx('link up','up'); };
+      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, device:devInfo})); setStateEx('link up','up'); };
     ws.onmessage=wsMsgHandler;    ws.onclose=()=>{
       reading=false;
       const retry=()=>{
@@ -852,7 +857,7 @@ async function connect(){
                setStateEx('link up','up'); const baud=parseInt(($('baud')?$('baud').value:'115200'),10)||115200;
                let devInfo=null; try{ const ii=port.getInfo();
                  devInfo={vendorId:ii.usbVendorId, productId:ii.usbProductId, serialNumber:ii.serialNumber||null}; }catch(e){}
-               ws.send(JSON.stringify({t:'hello',baud, device:devInfo}));
+               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, device:devInfo}));
                reading = true; pumpReads(); };
              ws.onmessage = wsMsgHandler;
              ws.onclose = ()=>{ setTimeout(retry, 1500); };
@@ -1594,6 +1599,18 @@ class Relay:
                     m = json.loads(msg)
                     if m.get("t") == "hello":
                         log.info("BROWSER hello: baud=%s (port currently open)", m.get("baud"))
+                        # v59.2: stale-JS observability — the tab reports the page
+                        # version it came from; a mismatch means it survived one or
+                        # more daemon upgrades via self-heal (the raise-kills-link
+                        # class of bug: silent old JS, invisible to every fix).
+                        pv = m.get("pageV")
+                        if pv and pv != RELAY_VERSION:
+                            log.warning("◆ TAB JS STALE: page %s vs daemon %s — reload the tab between flashes to update",
+                                        pv, RELAY_VERSION)
+                            try:
+                                await connection.send(json.dumps({"t": "reload-needed", "served": RELAY_VERSION, "tab": pv}))
+                            except Exception:
+                                pass
                         # v26: per-device binding (registry upsert + link map)
                         info = m.get("device")
                         if isinstance(info, dict):
