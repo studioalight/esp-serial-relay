@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v60"
+RELAY_VERSION = "v61"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -805,9 +805,15 @@ async function closePort(){
   try{ port && await port.close(); }catch(e){}
   port=null;
 }
+let pumpEpoch=0;   // v61: single-flight — self-heal's resume call must retire the
+                   // surviving pre-drop pump instead of starting a twin; two pumps
+                   // steal the reader lock from each other forever (FIELD 18:04:
+                   // 'Releasing Default reader' flood, hundreds per minute)
+let pumpLastErr='';
 async function pumpReads(){
   reading=true;
-  while(port && port.readable && reading){
+  const myEpoch=++pumpEpoch;
+  while(port && port.readable && reading && myEpoch===pumpEpoch){
     try{
       reader=port.readable.getReader();
       for(;;){
@@ -815,7 +821,11 @@ async function pumpReads(){
         if(done) break;
         if(value && ws && ws.readyState===1){ monAdd(value,'rx'); ws.send(value); }
       }
-    } catch(e){ log('read: '+e,'bad'); await new Promise(r=>setTimeout(r,200)); }
+    } catch(e){
+      const msg=String((e&&e.message)||e);
+      if(msg!==pumpLastErr){ log('read: '+msg,'bad'); pumpLastErr=msg; }
+      await new Promise(r=>setTimeout(r,200));
+    }
     finally{ try{ reader && reader.releaseLock(); }catch(e){} reader=null; }
   }
 }
