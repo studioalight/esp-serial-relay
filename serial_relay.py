@@ -2030,6 +2030,18 @@ class Relay:
             released = True
         if released:
             log.info("rfc2217 client gone (device=%s)", did)
+            # v56: the flash session ENDED when the client disconnects — if the
+            # device's panel was mid-flash (write/verify), emit 'reset' so the
+            # page completes the walk and doesn't park mid-flash (field 08:53:
+            # the --after no_reset flash with successful MD5 left the panel at
+            # 'verify' forever, because the chip parks in the bootloader with
+            # no rx traffic to trigger the reset path).
+            view = getattr(self, "device_state", {}).get(did)
+            if view is not None and getattr(view, "phase", None) and \
+               view.phase.get("phase") in ("write", "verify"):
+                _set_wire_phase(view, "reset")
+                view._reset_latched = True
+                view._flash_total = None
             try:
                 pm.connection.writer.close()
             except Exception:
