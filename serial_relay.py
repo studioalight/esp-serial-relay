@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v48"
+RELAY_VERSION = "v50"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1004,42 +1004,47 @@ def wire_decode_phase(r, data, direction):
         phase, kind = hit
         if kind in ("begin", "begin-defl"):
             # Source-verified payloads (esptool v5):
-            #   FLASH_BEGIN     <erase_size, num_blocks, write_size, offset>
+            #   FLASH_BEGIN      <erase_size, num_blocks, write_size, offset>
             #   FLASH_DEFL_BEGIN <write_size, num_blocks, write_size, offset>
-            # Progress total = num_blocks × write_size either way (data[4:8] ×
-            # data[8:12]). FIELD 08:57 (real capture): frames split across
-            # 4 KB socket reads were skipped then deleted — write never lit,
-            # pct stayed None. Incomplete frames must WAIT: if the payload
-            # range isn't in the buffer yet, stop and retain until more ends.
+            # FIELD 08:57: frames split across 4 KB socket reads — incomplete
+            # frames WAIT (retain from the frame start until more arrives).
             if i + 9 + 16 > n:
                 del b[:i]
                 return  # wait for the next chunk to complete this frame
             d = i + 9           # data starts after 0xC0 + BBHI(8)
             num_blocks = b[d + 4] | (b[d + 5] << 8) | (b[d + 6] << 16) | (b[d + 7] << 24)
             write_size = b[d + 8] | (b[d + 9] << 8) | (b[d + 10] << 16) | (b[d + 11] << 24)
+            offset = b[d + 12] | (b[d + 13] << 8) | (b[d + 14] << 16) | (b[d + 15] << 24)
             total = num_blocks * write_size
-            if 0 < total < (1 << 27):
-                r._flash_total = total
-                r._flash_done = 0
-                _set_wire_phase(r, "write", "begin")
-        elif kind in ("block", "block-defl"):
-            if r._flash_total:
-                r._flash_done += ln     # FLASH_DATA len field == block payload bytes
-                pct = min(100, int(100.0 * r._flash_done / r._flash_total))  # floor: 100 only when done
+            # v50: MULTI-FILE flash — one esptool run announces several files in
+            # sequence (bootloader 0x0, partitions 0x8000, app 0x10000…). Track
+            # per-file: each begin opens/resets its file; done accumulates per
+            # file; overall pct = sum(done)/sum(totals) across the whole session.
+            r._flash_files[offset] = {"total": total, "done": 0}
+            r._cur_file = offset
+            r._files_opened = getattr(r, "_files_opened", 0) + 1
+            pct = 0
+            r.phase = {"phase": "write", "pct": pct, "file": r._files_opened,
+                       "filesTotal": 3, "label": {"0": "bootloader", "32768": "partition table",
+                       "65536": "app"}.get(str(offset), hex(offset))}
+            r.phase_src = "wire"
+            r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": 0,
+                                              "file": r._files_opened, "label": r.phase["label"]})
+        elif kind in ("block", "block-defl", "data-defl", "data"):
+            if r._cur_file is not None and r._flash_total:
+                rec = r._flash_files.get(r._cur_file)
+                if rec is None:
+                    rec = {"total": r._flash_total, "done": 0}
+                    r._flash_files[r._cur_file] = rec
+                rec["done"] += ln
+                done_sum = sum(f["done"] for f in r._flash_files.values())
+                total_sum = sum(f["total"] for f in r._flash_files.values())
+                pct = min(100, int(100.0 * done_sum / total_sum)) if total_sum else 0
                 r.phase = {"phase": "write", "pct": pct}
                 r.phase_src = "wire"
                 r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": pct})
         elif kind in ("end", "end-defl"):
-            # transfer complete: register 100% — the declared total
-            # (num_blocks×write_size) over-rounds, so the floor of the last
-            # real block lands at 99 (capture 09:10 proved it). ONE frame:
-            # write@100 IS the end state (verify follows immediately; a
-            # second _set_wire_phase would overwrite the pending frame).
-            if r._flash_total:
-                r.phase = {"phase": "write", "pct": 100}
-                r.phase_src = "wire"
-                r._wire_phase_frame = json.dumps({"t": "phase", "phase": "write", "pct": 100})
-            r._flash_total = None
+            r._cur_file = None   # file complete; done stays in the pool
         elif phase == "connect":
             _set_wire_phase(r, "connect")
         elif phase == "sync":
@@ -1402,6 +1407,8 @@ class _DeviceView:
         self._phase_scan = bytearray()
         self._flash_total = None
         self._flash_done = 0
+        self._flash_files = {}     # v49: offset -> {total, done} (multi-file flash)
+        self._cur_file = None      # v49: offset of the file being written
         self._reset_latched = False
         self._wire_phase_frame = None
         self.ready = None
