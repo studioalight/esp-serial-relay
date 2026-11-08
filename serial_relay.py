@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v58"
+RELAY_VERSION = "v59"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -682,16 +682,26 @@ async function wsMsgHandler(ev){
         break:             m.brk!==undefined ? !!m.brk : undefined }); }
       catch(e){ log('setSignals: '+e,'bad'); }
     } else if(m.t==='reopen'){
+      // live baud change: prefer port.update() — closing/opening pulses DTR/RTS on some
+      // platforms, which reboots a chip parked mid-stub (the post-raise sync then finds
+      // nothing). update() re-clocks the UART without touching control lines.
       log('reopen at '+m.baud+'\u2026');
-      reading=false;
-      try{ reader && await reader.cancel(); }catch(e){}
-      try{ reader && reader.releaseLock(); }catch(e){}
-      try{ writer && writer.releaseLock(); }catch(e){}
-      await port.close();
-      await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
-      writer=port.writable.getWriter();
-      log('reopened at '+m.baud,'ok');
-      pumpReads(); pollSignals();
+      let updated=false;
+      if(port && port.update){
+        try{ await port.update({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'}); updated=true;
+             log('baud updated to '+m.baud+' (live)','ok'); }catch(e){}
+      }
+      if(!updated){
+        reading=false;
+        try{ reader && await reader.cancel(); }catch(e){}
+        try{ reader && reader.releaseLock(); }catch(e){}
+        try{ writer && writer.releaseLock(); }catch(e){}
+        await port.close();
+        await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
+        writer=port.writable.getWriter();
+        log('reopened at '+m.baud,'ok');
+        pumpReads(); pollSignals();
+      }
     }
   } else {
     const u8=new Uint8Array(ev.data);
