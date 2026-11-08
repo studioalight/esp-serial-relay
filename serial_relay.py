@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v59"
+RELAY_VERSION = "v59.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -689,7 +689,11 @@ async function wsMsgHandler(ev){
       let updated=false;
       if(port && port.update){
         try{ await port.update({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'}); updated=true;
-             log('baud updated to '+m.baud+' (live)','ok'); }catch(e){}
+             log('baud updated to '+m.baud+' (live)','ok');
+             try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'update', ok:true})); }catch(e){} }
+        catch(e){
+          try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'update', ok:false, err:String(e&&e.message||e)})); }catch(e2){}
+        }
       }
       if(!updated){
         reading=false;
@@ -700,6 +704,7 @@ async function wsMsgHandler(ev){
         await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
         writer=port.writable.getWriter();
         log('reopened at '+m.baud,'ok');
+        try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'reopen', ok:true})); }catch(e){}
         pumpReads(); pollSignals();
       }
     }
@@ -1631,6 +1636,12 @@ class Relay:
                         # only and died with the tab. Mirror them into the relay
                         # log so event markers survive and correlate with capture.
                         log.info("\u25c6 ANN: %s", str(m.get("text", ""))[:120])
+                    if m.get("t") == "baud":
+                        # v59.1: the tab's ack for a raise — which path ran and
+                        # whether it survived (the raise-kills-link diagnosis)
+                        log.info("◆ TAB BAUD ACK: %s @%s ok=%s %s",
+                                 m.get("path"), m.get("baud"), m.get("ok"),
+                                 ("err=" + str(m.get("err"))) if m.get("err") else "")
                     if m.get("t") == "sig" and self.pm is not None:
                         b = self.pm.serial
                         b.cts = bool(m.get("cts", True))
