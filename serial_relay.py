@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v76.1"
+RELAY_VERSION = "v77"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -805,6 +805,7 @@ async function wsMsgHandler(ev){
         reading=false;
         PORT_REOPENING=true;
         REOPEN_STARTED_AT=Date.now();
+        let REOPEN_OK=true;
         try{
           try{ reader && await reader.cancel(); }catch(e){}
           try{ reader && reader.releaseLock(); }catch(e){}
@@ -815,6 +816,10 @@ async function wsMsgHandler(ev){
           writer=port.writable.getWriter();
         }catch(e){
           log('reopen failed: '+e,'bad');
+          REOPEN_OK=false;
+          // the board re-enumerated (native USB reset) — take the port back
+          // automatically instead of leaving a dead writer behind
+          if(String(e).indexOf('Failed to open')>=0 || String(e).indexOf('lost')>=0){ recoverPort(); }
         }finally{
           // v76: THE FLAG MUST ALWAYS COME DOWN — a failed port.open left
           // PORT_REOPENING true forever, so every later byte was silently
@@ -824,8 +829,10 @@ async function wsMsgHandler(ev){
           PORT_REOPENING=false;
         }
         for(const pw of pendingWrites.splice(0)){ try{ await writer.write(pw); }catch(e){} }
-        log('reopened at '+m.baud,'ok');
-        try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'reopen', ok:true})); }catch(e){}
+        if(REOPEN_OK){
+          log('reopened at '+m.baud,'ok');
+          try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'reopen', ok:true})); }catch(e){}
+        }
         pumpReads(); pollSignals();
       }
     }
@@ -834,7 +841,10 @@ async function wsMsgHandler(ev){
     monAdd(u8,'tx');
     if(PORT_REOPENING){ pendingWrites.push(u8); return; }
     try{ await writer.write(u8); }catch(e){
-      if(String(e).indexOf('closed')>=0){ pendingWrites.push(u8); return; }
+      const em=String(e);
+      if(em.indexOf('closed')>=0 || em.indexOf('released')>=0 || em.indexOf('Cannot write')>=0){
+        pendingWrites.push(u8); recoverPort(); return;
+      }
       log('write: '+e,'bad');
     }
   }
@@ -854,12 +864,53 @@ let ws=null, port=null, reader=null, writer=null, reading=false, sigPoll=false;
 let curBaud=0;   // v63: the tab's REAL uart rate — open at openPort, live at every
                  // update/reopen; carried in hello so the daemon can sync-reopen
                  // a stale rate instead of deadlocking
+let PORT_INFO=null;        // v77: the authorized port's identity, for recovery
+let RECOVERING=false;
 async function openPort(baud){
   port=await navigator.serial.requestPort();
   await port.open({baudRate:baud, dataBits:8, stopBits:1, parity:'none'});
   curBaud=baud;
+  try{ PORT_INFO=port.getInfo(); }catch(e){}
   writer=port.writable.getWriter();
   log('serial port opened at '+baud,'ok');
+}
+/* v77: PORT RECOVERY — the native-USB S3 re-enumerates when its reset pulse
+   lands (FIELD 14:04: 'read: The device has been lost', then every write fails
+   with a released writer). navigator.serial.getPorts() returns already-
+   authorized ports WITHOUT a user gesture, so the tab can re-acquire the same
+   board and resume the bridge all by itself. */
+async function recoverPort(){
+  if(RECOVERING){ return; }
+  RECOVERING=true;
+  try{
+    for(let attempt=0; attempt<15 && reading===true; attempt++){
+      await new Promise(r=>setTimeout(r,400));
+      let ports=[];
+      try{ ports=await navigator.serial.getPorts(); }catch(e){ ports=[]; }
+      const match=ports.find(p=>{
+        try{
+          const i=p.getInfo();
+          if(!PORT_INFO) return true;
+          if(PORT_INFO.usbVendorId && i.usbVendorId && i.usbVendorId!==PORT_INFO.usbVendorId) return false;
+          if(PORT_INFO.usbProductId && i.usbProductId && i.usbProductId!==PORT_INFO.usbProductId) return false;
+          return true;
+        }catch(e){ return false; }
+      });
+      if(!match) continue;
+      try{ if(port && port!==match){ try{ await port.close(); }catch(e){} } }catch(e){}
+      port=match;
+      try{
+        await port.open({baudRate:curBaud||115200, dataBits:8, stopBits:1, parity:'none'});
+      }catch(e){ continue; }   // not back yet — keep waiting
+      writer=port.writable.getWriter();
+      log('port recovered after re-enumeration (attempt '+(attempt+1)+')','ok');
+      PORT_REOPENING=false;
+      try{ for(const pw of pendingWrites.splice(0)){ try{ await writer.write(pw); }catch(e){} } }catch(e){}
+      pumpReads(); pollSignals();
+      return;
+    }
+    log('port recovery gave up after 15 attempts','bad');
+  } finally { RECOVERING=false; }
 }
 /* v41.2: page-local board reset — the tab owns the port, so the pulse
    sequence runs with browser-local timing (no relay hop per transition).
@@ -978,6 +1029,9 @@ async function pumpReads(){
     } catch(e){
       const msg=String((e&&e.message)||e);
       if(msg!==pumpLastErr){ log('read: '+msg,'bad'); pumpLastErr=msg; }
+      if(msg.indexOf('lost')>=0 || msg.indexOf('device has been lost')>=0 || msg.indexOf('released')>=0){
+        recoverPort();
+      }
       await new Promise(r=>setTimeout(r,200));
     }
     finally{ try{ reader && reader.releaseLock(); }catch(e){} reader=null; }
