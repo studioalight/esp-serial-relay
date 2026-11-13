@@ -34,8 +34,10 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import subprocess as _subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -49,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v65.1"
+RELAY_VERSION = "v66"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1663,6 +1665,12 @@ class Relay:
                                 elif m.get("t") == "dev-rename":
                                     # v26: registry rename/port reassign, token-guarded
                                     cfg_ok = self._handle_dev_rename(m)
+                                elif m.get("t") == "dev-reidentify":
+                                    # v66: probe the board on this device's port, learn
+                                    # its MAC, correct the registry. Token-guarded; runs
+                                    # async — the result is acked via cfg-ack when done.
+                                    LOOP.create_task(self._reidentify_task(m, connection))
+                                    continue   # async result; nothing to ack now
                                 elif m.get("t") == "cfg":
                                     # v24: settings save (token-guarded) —
                                     # handled here, never forwarded to other tabs
@@ -2057,6 +2065,109 @@ class Relay:
             return (ok, f"device {did} updated" if ok else f"unknown device {did}")
         except ValueError as e:
             return (False, str(e))
+
+    async def _reidentify_task(self, m, connection):
+        """v66: press-the-button board re-identification.
+
+        FIELD 2026-11-13: a fresh ESP32-S3-Touch-AMOLED-1.8 silently inherited
+        the old room node's registry row (all native-USB ESP32-S3 share
+        vid303a:pid1001 with no serial). Fredrik asked for a button: run the
+        esptool MAC probe against this device's port, learn the MAC, and
+        correct the registry — including a port swap when the MAC belongs to a
+        KNOWN other row (the slot was wearing another board's identity).
+        """
+        import re as _re
+        if m.get("token") != SETTINGS_TOKEN:
+            try:
+                await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
+                    "note": "bad token — reload the devices page"}))
+            except Exception:
+                pass
+            return
+        did = m.get("deviceId")
+        d = _load_devices()
+        rec = d.get(did)
+        if rec is None:
+            try:
+                await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
+                    "note": f"unknown device {did}"}))
+            except Exception:
+                pass
+            return
+        port = int(rec.get("rfcPort", 0))
+        log.info("RE-IDENTIFY: probing device %s on :%d (button press)", did, port)
+        mac = None
+        # entry paths, in order: native USB (usb_reset), then the default
+        # reset — for kicker boards the v62 auto-kick covers the entry
+        for mode in ("usb_reset", "default_reset"):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "esptool",
+                    "--port", f"rfc2217://127.0.0.1:{port}",
+                    "--chip", "esp32s3", "-b", "115200",
+                    "--before", mode, "--after", "hard_reset", "chip_id",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                try:
+                    out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    out, _ = await proc.communicate()
+                text = (out or b"").decode("utf-8", errors="replace")
+                mmatch = _re.search(r"(MAC\\s*[:=]\\s*)([0-9a-fA-F:]{17})", text)
+                if mmatch:
+                    mac = mmatch.group(2).lower()
+                    break
+                log.info("RE-IDENTIFY: %s connect failed (%.80s) — next entry mode",
+                         mode, text.strip().splitlines()[-1] if text.strip() else "no output")
+            except Exception as e:
+                log.warning("RE-IDENTIFY probe (%s) error: %s", mode, e)
+        if mac is None:
+            try:
+                await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
+                    "note": "could not read the board's MAC — is a client holding the port? (the serial-watch agent yields only via bootout)"}))
+            except Exception:
+                pass
+            return
+        # correct the registry
+        note_parts = [f"MAC {mac}"]
+        other = None
+        for row_did, row in d.items():
+            if row_did == did:
+                continue
+            if (row.get("mac") or "").lower() == mac:
+                other = row_did
+                break
+        if other is not None:
+            a, b = d[did], d[other]
+            a["rfcPort"], b["rfcPort"] = b["rfcPort"], a["rfcPort"]
+            note_parts.append(
+                f"slot swap with row '{b.get('label')}' (@{b['rfcPort']} <-> @{rec['rfcPort']}) — "
+                f"this board is actually '{b.get('label')}'")
+            # labels follow the boards across the swap: the pressed row takes the
+            # other board's label, the other row takes this one's
+            a["label"], b["label"] = b.get("label"), a.get("label")
+        else:
+            rec["mac"] = mac
+            label = rec.get("label") or did
+            # first MAC for this slot: tag the label with the tail so the board
+            # is visually distinct from its vid/pid twins
+            if not rec.get("label").endswith(mac[-5:]):
+                rec["label"] = label + " ·" + mac[-5:].replace(":", "")
+            note_parts.append(f"learned and stored on '{rec.get('label')}'")
+        _save_devices(d)
+        note = "; ".join(note_parts)
+        log.info("RE-IDENTIFY: %s -> %s", did, note)
+        # listeners must follow any swap
+        try:
+            for row_id, row2 in d.items():
+                LOOP.create_task(self._ensure_device_server(row_id, row2["rfcPort"]))
+        except Exception:
+            pass
+        try:
+            await connection.send(json.dumps({"t": "reidentify-result", "ok": True,
+                "note": note, "mac": mac, "label": rec.get("label")}))
+        except Exception:
+            pass
 
     async def _handle_settings(self, m):
         """v24: apply + persist web settings; restart the launchd label for
@@ -2626,14 +2737,23 @@ function rows(){
         '<td class="port">:'+v.rfcPort+'</td>'+
         '<td class="'+(v.link==='up'?'up':'down')+'">'+(v.link||'down')+'</td>'+
         '<td>'+(v.phase||'idle')+'</td>'+
-        '<td><button class="save">save</button></td>';
-      tr.querySelector('.save').onclick=()=>{
+        '<td><button class="save">save</button> <button class="reid">re-identify</button></td>';
+      const sendCfg=(frame)=>{
         const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/console');
-        ws.onopen=()=>ws.send(JSON.stringify({t:'dev-rename',token:TOKEN,deviceId:v.id,label:tr.querySelector('.lbl').value}));
+        ws.onopen=()=>ws.send(JSON.stringify(Object.assign({token:TOKEN,deviceId:v.id},frame)));
         ws.onmessage=ev=>{ if(ev.data[0]!=='{')return; let m; try{m=JSON.parse(ev.data)}catch(e){return}
           if(m.t==='cfg-ack'){ $('msg').textContent=m.ok?('saved — '+m.note):('rejected — '+m.note);
-            $('msg').className=m.ok?'ok':'bad'; ws.close(); lastRowsJson=''; rows(); } };
-        ws.onerror=()=>{ $('msg').textContent='connection error'; };
+            $('msg').className=m.ok?'ok':'bad'; ws.close(); lastRowsJson=''; rows(); }
+          else if(m.t==='reidentify-result'){ $('msg').textContent=(m.ok?'✔ ':'✘ ')+m.note;
+            $('msg').className=m.ok?'ok':'bad'; $('msg').dataset.busy=''; ws.close(); lastRowsJson=''; rows(); } };
+        ws.onerror=()=>{ $('msg').textContent='connection error'; $('msg').dataset.busy=''; };
+      };
+      tr.querySelector('.save').onclick=()=>sendCfg({t:'dev-rename',label:tr.querySelector('.lbl').value});
+      tr.querySelector('.reid').onclick=()=>{
+        if($('msg').dataset.busy)return; $('msg').dataset.busy='1';
+        $('msg').textContent='probing '+v.label+' — the board reboots once, MAC lookup via esptool (~20 s)…';
+        $('msg').className='hint';
+        sendCfg({t:'dev-reidentify'});
       };
       el.appendChild(tr);
     });
