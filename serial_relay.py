@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v71"
+RELAY_VERSION = "v72"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2339,26 +2339,26 @@ class Relay:
                bytes([0x07, 0x07, 0x12, 0x20]) + b"\x55" * 32 + bytes([0xC0])
         resp = b""
         for attempt in range(4):
-            # usb-jtag reset dance via sig pulses (the pulse pattern that the
-            # wire monitor showed landing: rst:0x15, download entry)
+            # the exact esptool 4.7 USBJTAGSerialReset sequence (the native USB
+            # JTAG-Serial peripheral's own mapping): IO0 through DTR, EN through
+            # RTS, reset pulse with IO0 held → DOWNLOAD entry
             await _sig(False, False)
-            await asyncio.sleep(0.12)
-            await _sig(True, True)
-            await asyncio.sleep(0.06)
+            await asyncio.sleep(0.1)
+            await _sig(True, False)
+            await asyncio.sleep(0.1)
             await _sig(False, True)
-            await asyncio.sleep(0.10)
+            await _sig(True, True)
+            await asyncio.sleep(0.1)
             await _sig(True, False)
-            await asyncio.sleep(0.05)
+            await _sig(True, True)
+            await asyncio.sleep(0.1)
             await _sig(False, False)
-            await asyncio.sleep(0.45)
-            await _sig(True, False)
-            await asyncio.sleep(0.12)
             await _sig(False, False)
-            await asyncio.sleep(0.45)
+            await asyncio.sleep(0.4)
             resp = await _wire(SYNC, b"\xc0\x01\x08", 1.0)
             if resp:
-                log.info("RE-IDENTIFY probe: %s (attempt %d) — ROM sync answer, reading MAC",
-                         did, attempt + 1)
+                log.info("RE-IDENTIFY probe: %s (attempt %d) — ROM sync answer, reading MAC (attempt %d/4)",
+                         did, attempt + 1, attempt + 1)
                 break
         if not resp:
             self._ident_did = None
