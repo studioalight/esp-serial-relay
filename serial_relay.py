@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v86"
+RELAY_VERSION = "v86.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1693,7 +1693,12 @@ class WebSerialBridge:
         if v < 19200 and self._baud >= 19200:
             if not getattr(self, "_dance_warned", False):
                 self._dance_warned = True
-                log.info("rfc2217: ignoring pyserial's %d open-dance (tab at %d)", v, self._baud)
+                log.info("rfc2217: acknowledging pyserial's %d open-dance WITHOUT bouncing the tab (at %d)",
+                         v, self._baud)
+            # the value must be ACKNOWLEDGED or pyserial fails the negotiation
+            # ('remote rejected value for option baudrate'); the tab is NOT asked
+            # to reopen for it — the port stays where it is
+            self._baud = v
             return
         # v63: detect a stale tab uart — a fresh PM assumes the open rate, but
         # the physical tab may sit at the rate a previous raise left it at.
