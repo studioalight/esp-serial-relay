@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.9"
+RELAY_VERSION = "v67"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -208,11 +208,33 @@ def _safe_next_port(d):
         p += 1
     return p
 
-def registry_upsert(info):
+def registry_new_row(d, base_did, info):
+    """v67: mint the NEXT-seat row for an additional identical-vid/pid board
+    (did-N, next free port >=4004). The row persists; the binding travels via
+    the tab's localStorage(prevDid) so the seat holds across reloads."""
+    n = 2
+    while f"{base_did}-{n}" in d:
+        n += 1
+    new_did = f"{base_did}-{n}"
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    d[new_did] = {"id": new_did,
+                  "rfcPort": _safe_next_port(d),
+                  "firstSeen": now, "lastSeen": now,
+                  "label": info.get("label") or f"{base_did}-{n}",
+                  "vendorId": info.get("vendorId"), "productId": info.get("productId"),
+                  "serialNumber": (info.get("serialNumber") or None)}
+    _save_devices(d)
+    return new_did, d[new_did]
+
+def registry_upsert(info, prev_did=None):
     """Get-or-create a device record from a Web Serial hello's info dict.
     Returns (id, record). Identity: serialNumber if present, else vid/pid + a
     short label (persisted, so identical boards stay stable across replug).
-    """
+    v67: prev_did — when the tab remembers its registry id (localStorage), a
+    re-hello re-binds THAT row (two identical-vid/pid boards coexisting); the
+    caller then decides whether the base row is occupied by another live tab
+    and asks for a new seat."""
+    d = _load_devices()
     d = _load_devices()
     serial = (info.get("serialNumber") or "").strip()
     vid = info.get("vendorId"); pid = info.get("productId")
@@ -724,6 +746,7 @@ async function wsMsgHandler(ev){
     }
     if(m.t==='device-bound'){
       BOUND_DID=m.id;   // v66: the re-identify button's target
+      try{ localStorage.setItem('relayDid', m.id); }catch(e){}   // v67: the seat persists reloads
       const dt=$('bridge-device-text');
       if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
       const pn=$('procedure-line');
@@ -948,7 +971,7 @@ async function connect(){
       try{ const i=port.getInfo();
         devInfo={vendorId:i.usbVendorId, productId:i.usbProductId,
                  serialNumber:i.serialNumber||null}; }catch(e){}
-      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, device:devInfo})); setStateEx('link up','up'); };
+      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return localStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo})); setStateEx('link up','up'); };
     ws.onmessage=wsMsgHandler;    ws.onclose=()=>{
       reading=false;
       const retry=()=>{
@@ -960,7 +983,7 @@ async function connect(){
                setStateEx('link up','up'); const baud=parseInt(($('baud')?$('baud').value:'115200'),10)||115200;
                let devInfo=null; try{ const ii=port.getInfo();
                  devInfo={vendorId:ii.usbVendorId, productId:ii.usbProductId, serialNumber:ii.serialNumber||null}; }catch(e){}
-               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, device:devInfo}));
+               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return localStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo}));
                reading = true; pumpReads(); };
              ws.onmessage = wsMsgHandler;
              ws.onclose = ()=>{ setTimeout(retry, 1500); };
@@ -1815,9 +1838,22 @@ class Relay:
                             except Exception:
                                 pass
                         # v26: per-device binding (registry upsert + link map)
+                        # v67: prevDid (tab localStorage) holds this tab's seat;
+                        # an occupied base row gets a NEW seat for an additional
+                        # identical-vid/pid board in another tab/window.
                         info = m.get("device")
+                        prev_seat = m.get("prevDid")
                         if isinstance(info, dict):
-                            did, rec = registry_upsert(info)
+                            if prev_seat and prev_seat in _load_devices():
+                                did, rec = registry_upsert(info, prev_did=prev_seat)
+                            else:
+                                did, rec = registry_upsert(info)
+                                bound_other = self.device_links.get(did)
+                                seat_taken = (bound_other is not None and
+                                              bound_other is not connection and
+                                              getattr(bound_other, "close_code", None) is None)
+                                if seat_taken:
+                                    did, rec = registry_new_row(_load_devices(), did, info)
                             self.device_links[did] = connection
                             self.device_by_ws[connection] = did
                             self.device_ports[did] = rec["rfcPort"]
