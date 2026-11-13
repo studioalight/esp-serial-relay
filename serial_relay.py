@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v78.1"
+RELAY_VERSION = "v79"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -787,6 +787,13 @@ async function wsMsgHandler(ev){
         }
       }catch(e){ log('setSignals: '+e,'bad'); }
     } else if(m.t==='reopen'){
+      // v79: a reopen to the rate the port already runs at is a NO-OP — the
+      // close/open cycle is what detaches native-USB boards ("read: The device
+      // has been lost" right after 'reopened at 115200', FIELD 14:08)
+      if(port && curBaud===m.baud){
+        try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'noop', ok:true})); }catch(e){}
+        return;
+      }
       // live baud change: prefer port.update() — closing/opening pulses DTR/RTS on some
       // platforms, which reboots a chip parked mid-stub (the post-raise sync then finds
       // nothing). update() re-clocks the UART without touching control lines.
@@ -1820,6 +1827,7 @@ class Relay:
         self._mon_flush_scheduled = False
         self._kick_marked = set()    # v62: devices whose kickCapability was announced this run
         self.window_seats = {}       # v69.2: windowId -> did; rebuilt from the registry below
+        self.window_by_conn = {}     # v79: ws connection -> windowId (seat-conflict scope)
         self._slot_rx = {}           # v64.2: did -> monotonic of last bytes FROM its rfc2217 client
 
     # ---------- browser side ----------
@@ -1958,12 +1966,21 @@ class Relay:
                             # only the last-bound tab would receive its traffic:
                             # FIELD 13:55 both bridge lines said :4007). Mint this
                             # window its own seat instead.
+                            # v79: only a DIFFERENT WINDOW holding the seat is a
+                            # conflict — the page's own previous socket (dying
+                            # during a reload) kept minting a fresh seat every
+                            # press (FIELD 14:08: seats -2 .. -9)
+                            if wid:
+                                self.window_by_conn[connection] = wid
                             seat_conflict = False
                             if prev_seat and prev_seat in _load_devices():
                                 holder = self.device_links.get(prev_seat)
+                                holder_wid = self.window_by_conn.get(holder) if holder is not None else None
                                 seat_conflict = (holder is not None
                                                  and holder is not connection
-                                                 and getattr(holder, "close_code", None) is None)
+                                                 and getattr(holder, "close_code", None) is None
+                                                 and holder_wid is not None
+                                                 and holder_wid != wid)
                             if seat_conflict and isinstance(info, dict):
                                 d0 = _load_devices()
                                 vid = info.get("vendorId"); pid = info.get("productId")
@@ -2080,6 +2097,7 @@ class Relay:
             log.info("browser link down")
             # v36: clear per-device links only if THIS socket was the bound one
             did = self.device_by_ws.pop(connection, None)
+            self.window_by_conn.pop(connection, None)
             if did and self.device_links.get(did) is connection:
                 self.device_links.pop(did)
             if self.ws is connection:
