@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v88"
+RELAY_VERSION = "v89"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -911,7 +911,9 @@ async function recoverPort(){
           await cand.open({baudRate:curBaud||115200, dataBits:8, stopBits:1, parity:'none'});
           const w=cand.writable.getWriter();
           await w.write(ROM_SYNC);
-          try{ await w.close(); }catch(e){}
+          // v89: releaseLock, NOT close — closing the writer closes the PORT
+          // (the ping then read from a dead port and every candidate failed)
+          try{ w.releaseLock(); }catch(e){}
           const r=cand.readable.getReader();
           let seen=new Uint8Array(0);
           const until=Date.now()+600;
