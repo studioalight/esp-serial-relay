@@ -2283,40 +2283,47 @@ class Relay:
             except Exception:
                 pass
             return
-        # correct the registry
-        note_parts = [f"MAC {mac}"]
-        other = None
+        # v68: the port belongs to the WINDOW, the row to the BOARD.
+        # Re-identify on a slot learns WHICH board is attached THERE, and the
+        # window re-binds to that board's row (its rfcPort becomes this
+        # window's port). If the MAC belongs to a row currently seated
+        # elsewhere, that row simply moves here — no port swap: the other
+        # window keeps being whatever it probes itself as.
+        matched = None
         for row_did, row in d.items():
-            if row_did == did:
-                continue
             if (row.get("mac") or "").lower() == mac:
-                other = row_did
+                matched = row_did
                 break
-        if other is not None:
-            a, b = d[did], d[other]
-            a["rfcPort"], b["rfcPort"] = b["rfcPort"], a["rfcPort"]
-            note_parts.append(
-                f"slot swap with row '{b.get('label')}' (@{b['rfcPort']} <-> @{rec['rfcPort']}) — "
-                f"this board is actually '{b.get('label')}'")
-            # labels follow the boards across the swap: the pressed row takes the
-            # other board's label, the other row takes this one's
-            a["label"], b["label"] = b.get("label"), a.get("label")
-            if (b.get("mac") or "").lower() and mac_names().get(b["mac"].lower()):
-                a["label"] = mac_names()[b["mac"].lower()] + " ·" + b["mac"][-5:].replace(":", "")
-        else:
-            rec["mac"] = mac
-            known = mac_names().get(mac)
-            if known:
-                import re as _re2
-                rec["label"] = _re2.sub(r" ·[0-9a-f]{4,6}$", "", known) + " ·" + mac[-5:].replace(":", "")
-                note_parts.append(f"known board — name '{known}' restored")
-            label = rec.get("label") or did
-            # v66.7: ONE MAC tail — strip any previous tail (board swaps on one
-            # port re-learn their MAC each press; stacked tails mislabel)
-            import re as _re
-            label_base = _re.sub(r" ·[0-9a-f]{4,6}$", "", label)
-            rec["label"] = label_base + " ·" + mac[-5:].replace(":", "")
-            note_parts.append(f"learned and stored on '{rec.get('label')}'")
+        note_parts = [f"MAC {mac}"]
+        if matched is None:
+            # brand-new board: mint a row named from the MAC memory
+            import re as _re2
+            new_did = "board-" + mac.replace(":", "")
+            names = mac_names()
+            human = names.get(mac)
+            d[new_did] = {"id": new_did, "rfcPort": port,
+                "label": (human or "board") + " ·" + mac[-5:].replace(":", ""),
+                "mac": mac, "vendorId": rec.get("vendorId"),
+                "productId": rec.get("productId"), "serialNumber": rec.get("serialNumber"),
+                "firstSeen": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "lastSeen": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            matched = new_did
+            note_parts.append("new board registered")
+        row = d[matched]
+        old_seat = did if did != matched else None
+        # the window re-binds to the matched row, and the row's port becomes
+        # this window's port
+        row["rfcPort"] = port
+        if mac_names().get(mac):
+            import re as _re2
+            row["label"] = _re2.sub(r" ·[0-9a-f]{4,6}$", "", mac_names()[mac]) + " ·" + mac[-5:].replace(":", "")
+        self.device_links[matched] = connection
+        note_parts.append(f"this window re-bound to '{row.get('label')}'")
+        if old_seat is not None:
+            old_row = d.get(old_seat)
+            if old_row is not None:
+                old_row["label"] = (old_row.get("label") or old_seat) + " (unattached)"
+                note_parts.append(f"seat '{old_row.get('label')}' released (its board is elsewhere)")
         _save_devices(d)
         note = "; ".join(note_parts)
         log.info("RE-IDENTIFY: %s -> %s", did, note)
