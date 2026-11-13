@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66"
+RELAY_VERSION = "v66.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -423,6 +423,7 @@ PAGE = """<!doctype html>
  <div class="box-label" id="bridge-label" style="align-items:center">
   <span id="bridge-device-text">Serial bridge — bridge-Mac side</span>
   <button class="mini" id="board-reset" title="local DTR/RTS reset pulse — browser-side timing" style="margin-left:.5rem">⏻ reset</button>
+  <button class="mini" id="board-ident" title="press when this slot shows up as the wrong chip — esptool MAC probe through the port (board reboots once, ~20 s), the registry corrects itself (swaps ports/labels if the MAC belongs to another row)" style="margin-left:.3rem">⚖ re-identify</button>
   <button class="mini" id="force-dl" title="page-local force-download dance: pulse + watch the ROM banner, up to 4 attempts with escalating holds — needs NO buttons on the board; verify success by 'waiting for download' in the RX stream" style="margin-left:.3rem">⬇ force dl</button>
  </div>
  <div class="mon-ctl">
@@ -682,6 +683,7 @@ async function wsMsgHandler(ev){
       setStateEx('relay '+m.served+' — tab at '+PAGE_V+' — outdated (reload between flashes)','down');
     }
     if(m.t==='device-bound'){
+      BOUND_DID=m.id;   // v66: the re-identify button's target
       const dt=$('bridge-device-text');
       if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
       const pn=$('procedure-line');
@@ -784,6 +786,29 @@ async function localBoardReset(){
   }catch(e){ log('reset failed: '+e,'err'); }
 }
 $('board-reset').onclick=localBoardReset;
+
+/* v66: re-identify — the main page has the port and the bound device id, so
+ * the button lives here (Fredrik 2026-11-13). Opens a short /console ws to
+ * the token-guarded handler; the result lands back on this page and updates
+ * the bridge line. The board reboots once during the probe. */
+let BOUND_DID=null;   // set when the device-bound frame arrives
+$('board-ident').onclick=()=>{
+  if(!BOUND_DID){ log('re-identify needs a bound device — connect the port first (bridge line shows the device)','bad'); return; }
+  if($('msg-busy')) return;
+  log('re-identifying '+BOUND_DID+' — probing the port via esptool, board reboots once (~20 s)…','');
+  const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/console');
+  ws.onopen=()=>ws.send(JSON.stringify({t:'dev-reidentify',token:TOKEN,deviceId:BOUND_DID}));
+  ws.onmessage=ev=>{ if(ev.data[0]!=='{')return; let m; try{m=JSON.parse(ev.data)}catch(e){return}
+    if(m.t==='reidentify-result'){
+      log((m.ok?'✔ ':'✘ ')+m.note, m.ok?'ok':'bad');
+      if(m.ok){
+        const dt=$('bridge-device-text');
+        if(dt) dt.textContent='Serial bridge — '+(m.label||BOUND_DID)+' · MAC '+(m.mac||'')+' · probed just now';
+      }
+      ws.close();
+    } };
+  ws.onerror=()=>log('re-identify: console connection error','bad');
+};
 
 /* v43: force-download — page-local dance + RX banner watch.
  * Sequence per attempt: release all → arm IO0 (DTR) → EN reset (RTS) →
@@ -2583,6 +2608,10 @@ async def http_gate(connection, request):
 # version stamp lives in ONE constant; both pages inherit it at import
 PAGE = PAGE.replace("%%RELAY_VERSION%%", RELAY_VERSION)
 DASH_PAGE = DASH_PAGE.replace("%%RELAY_VERSION%%", RELAY_VERSION)
+# v66.1: the main page now carries token-guarded actions (re-identify) — bake
+# the per-boot token into PAGE as well (previously only devices/settings pages)
+PAGE = PAGE.replace("%%TOKEN%%", SETTINGS_TOKEN)
+DASH_PAGE = DASH_PAGE.replace("%%TOKEN%%", SETTINGS_TOKEN)
 
 SETTINGS_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
