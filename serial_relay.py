@@ -808,7 +808,11 @@ async function wsMsgHandler(ev){
   } else {
     const u8=new Uint8Array(ev.data);
     monAdd(u8,'tx');
-    try{ await writer.write(u8); }catch(e){ log('write: '+e,'bad'); }
+    if(PORT_REOPENING){ pendingWrites.push(u8); return; }
+    try{ await writer.write(u8); }catch(e){
+      if(String(e).indexOf('closed')>=0){ pendingWrites.push(u8); return; }
+      log('write: '+e,'bad');
+    }
   }
 };
 /* v58: SELF-HEALING relay link — on ws drop, retry the WebSocket with
