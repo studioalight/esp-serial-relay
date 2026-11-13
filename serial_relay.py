@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v69.1"
+RELAY_VERSION = "v69.2"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -870,7 +870,7 @@ $('board-ident').onclick=()=>{
   if($('msg-busy')) return;
   log('window '+WIN_ID+': re-identifying '+BOUND_DID+' — probing the port via esptool, board reboots once (~20 s)…','');
   const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/console');
-  ws.onopen=()=>ws.send(JSON.stringify({t:'dev-reidentify',token:TOKEN,pageV:PAGE_V,deviceId:BOUND_DID}));
+  ws.onopen=()=>ws.send(JSON.stringify({t:'dev-reidentify',token:TOKEN,pageV:PAGE_V,windowId:WIN_ID,deviceId:BOUND_DID}));
   ws.onmessage=ev=>{ if(ev.data[0]!=='{')return; let m; try{m=JSON.parse(ev.data)}catch(e){return}
     if(m.t==='reidentify-result'){
       log((m.ok?'✔ ':'✘ ')+m.note, m.ok?'ok':'bad');
@@ -1737,6 +1737,7 @@ class Relay:
         self.cap = deque(maxlen=60000)   # sized for a FULL flash (~2.4 MB tx + app rx); hex strings in RAM
         self._mon_flush_scheduled = False
         self._kick_marked = set()    # v62: devices whose kickCapability was announced this run
+        self.window_seats = {}       # v69.2: windowId -> did; rebuilt from the registry below
         self._slot_rx = {}           # v64.2: did -> monotonic of last bytes FROM its rfc2217 client
 
     # ---------- browser side ----------
@@ -1857,6 +1858,12 @@ class Relay:
                         # identical-vid/pid board in another tab/window.
                         info = m.get("device")
                         prev_seat = m.get("prevDid")
+                        wid = m.get("windowId")
+                        # v69.2: a window that already owns a seat keeps it —
+                        # even when another window bound the same base row. The
+                        # window→seat map survives restarts (registry row.windowId).
+                        if wid and wid in self.window_seats and self.window_seats[wid] in _load_devices():
+                            prev_seat = self.window_seats[wid]
                         if isinstance(info, dict):
                             if prev_seat and prev_seat in _load_devices():
                                 did, rec = registry_upsert(info, prev_did=prev_seat)
@@ -1886,6 +1893,14 @@ class Relay:
                                               getattr(bound_other, "close_code", None) is None)
                                 if seat_taken:
                                     did, rec = registry_new_row(_load_devices(), did, info)
+                                    if wid:
+                                        try:
+                                            d3 = _load_devices()
+                                            d3[did]["windowId"] = wid
+                                            _save_devices(d3)
+                                            self.window_seats[wid] = did
+                                        except Exception:
+                                            pass
                             self.device_links[did] = connection
                             self.device_by_ws[connection] = did
                             self.device_ports[did] = rec["rfcPort"]
@@ -1910,6 +1925,16 @@ class Relay:
                                 self.browser_ready.set()
                             log.info("device bound: %s -> rfc2217:%d (label=%s)",
                                      did, rec["rfcPort"], rec.get("label"))
+                            # v69.2: the window's seat is persisted on its row
+                            if wid:
+                                try:
+                                    self.window_seats[wid] = did
+                                    d2 = _load_devices()
+                                    if d2.get(did, {}).get("windowId") != wid:
+                                        d2[did]["windowId"] = wid
+                                        _save_devices(d2)
+                                except Exception:
+                                    pass
                             try:
                                 await connection.send(json.dumps({
                                     "t": "device-bound", "id": did,
@@ -2224,6 +2249,7 @@ class Relay:
                 pass
             return
         did = m.get("deviceId")
+        _wid = m.get("windowId")
         d = _load_devices()
         rec = d.get(did)
         if rec is None:
@@ -2253,7 +2279,7 @@ class Relay:
                 except Exception:
                     pass
             self._release_slot(prev_pm, did)
-        log.info("RE-IDENTIFY: probing device %s on :%d (button press)", did, port)
+        log.info("RE-IDENTIFY: probing device %s on :%d (button press, window %s)", did, port, _wid)
         mac = None
         last_probe_note = ""
         # entry paths in order, with retry ROUNDS: the reset-strapping through
@@ -2324,13 +2350,21 @@ class Relay:
             matched = new_did
             note_parts.append("new board registered")
         row = d[matched]
-        old_seat = did if did != matched else None
-        # the window re-binds to the matched row, and the row's port becomes
-        # this window's port
+        old_rows = [x for x in (did, matched) if x and x != matched]
+        # v69.2: the window re-binds to the matched row, the row's port becomes
+        # this window's port, and BOTH rows' labels are recomputed from the
+        # mac-name memory (a stale label exchange was relabeling boards wrong)
         row["rfcPort"] = port
         if mac_names().get(mac):
             import re as _re2
             row["label"] = _re2.sub(r" ·[0-9a-f]{4,6}$", "", mac_names()[mac]) + " ·" + mac[-5:].replace(":", "")
+        for odid in old_rows:
+            orow = d.get(odid)
+            if orow is None:
+                continue
+            omac = (orow.get("mac") or "").lower()
+            if omac and mac_names().get(omac):
+                orow["label"] = _re2.sub(r" ·[0-9a-f]{4,6}$", "", mac_names()[omac]) + " ·" + omac[-5:].replace(":", "")
         self.device_links[matched] = connection
         self.device_ports[matched] = port
         try:
@@ -3026,6 +3060,9 @@ async def main():
         log.warning("port auto-heal skipped: %s", e)
     try:
         for rec in registry_list():
+            # v69.2: rows that carry a windowId re-claim their window's seat
+            if rec.get("windowId"):
+                relay.window_seats[rec["windowId"]] = rec["id"]
             await relay._ensure_device_server(rec["id"], rec["rfcPort"])
     except Exception as e:
         log.warning("boot-time device servers: %s", e)
