@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.4"
+RELAY_VERSION = "v66.5"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -100,7 +100,24 @@ BROWSER_WAIT_S = float(_env("ESP_RELAY_BROWSER_WAIT", "30"))  # v24: FINALLY WIR
 # self-restart the LaunchAgent via `launchctl kickstart` — boot re-reads it.
 SETTINGS_PATH = os.path.expanduser("~/.openclaw/serial-relay-settings.json")
 SETTINGS_KNOBS = ("rfcPort", "wsPort", "rfcBind", "browserWait")
-SETTINGS_TOKEN = os.urandom(16).hex()   # per-boot; baked into /settings HTML, required on save
+# v66.5: the token PERSISTS across daemon restarts — the per-boot re-randomized
+# token silently invalidated every page's token-guarded buttons (rename,
+# re-identify, settings save) on every daemon boot, forcing a page reload each
+# time (FIELD 2026-11-13: Fredrik's re-identify presses refused "bad token"
+# after the v66.4 restart — the page he pressed was loaded pre-restart). The
+# token is now loaded-or-created once, in a file next to the registry.
+_TOKEN_PATH = os.path.expanduser("~/.openclaw/serial-relay-token.json")
+try:
+    SETTINGS_TOKEN = json.load(open(_TOKEN_PATH)).get("token", "")
+except Exception:
+    SETTINGS_TOKEN = ""
+if not isinstance(SETTINGS_TOKEN, str) or len(SETTINGS_TOKEN) < 16:
+    SETTINGS_TOKEN = os.urandom(16).hex()
+    try:
+        json.dump({"token": SETTINGS_TOKEN}, open(_TOKEN_PATH, "w"))
+    except Exception as e:
+        log.warning("token persist failed (per-boot fallback): %s", e)
+# per-boot; baked into every page HTML, required on save/re-identify
 
 def load_settings():
     """Read persisted overrides; tolerate junk (missing/corrupt = no overrides)."""
