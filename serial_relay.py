@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v82"
+RELAY_VERSION = "v83"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2514,10 +2514,16 @@ class Relay:
             await _sig(False, False)
             await asyncio.sleep(0.4)
             resp = await _wire(SYNC, b"\xc0\x01\x08", 1.0)
-            for _extra in range(4 if not resp else 0):
+            # v83: the reset detaches the native-USB port; the tab needs to
+            # re-acquire it (getPorts + full teardown). Keep knocking with the
+            # SYNC for ~10 s — the ROM in download mode waits indefinitely, so
+            # an answer that arrives after the recovery is still our answer.
+            for _extra in range(25 if not resp else 0):
                 await asyncio.sleep(0.4)
-                resp = await _wire(SYNC, b"\xc0\x01\x08", 0.8)
+                resp = await _wire(SYNC, b"\xc0\x01\x08", 0.7)
                 if resp:
+                    log.info("RE-IDENTIFY probe: %s — ROM sync answered %d ms after the pulse round",
+                             did, int((_extra + 1) * 400))
                     break
             if resp:
                 log.info("RE-IDENTIFY probe: %s (attempt %d) — ROM sync answer, reading MAC (attempt %d/4)",
@@ -2568,7 +2574,9 @@ class Relay:
         if mac is None:
             try:
                 await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
-                    "note": "could not read the board's MAC — probe tail: " + " | ".join(
+                    "note": "no ROM sync answer (the board may be in app mode and the "
+                            "pulse path could not keep the USB port) — try: hold the board's "
+                            "BOOT button, tap RESET, release BOOT, then Connect and press again" if mac is None and not resp else "probe tail: " + " | ".join(
                         (getattr(self, "_last_probe_text", "") or "").strip().splitlines()[-3:])}))
             except Exception:
                 pass
