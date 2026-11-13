@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v81"
+RELAY_VERSION = "v82"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2533,39 +2533,38 @@ class Relay:
                 pass
             self._ident_did = None
             return
-        # READ_MAC: op 0x0B, args 6x0 — the response's first 6 data bytes are the MAC
-        READMAC = bytes([0xC0, 0x00, 0x0B]) + _struct.pack("<HI", 6, 0) + b"\x00" * 6 + bytes([0xC0])
-        self._ident_buf.clear()
-        try:
-            await link.send(READMAC)
-        except Exception as e:
-            log.warning("RE-IDENTIFY readmac send failed: %s", e)
-        resp2 = await _wire(b"\xc0\x01\x0b", b"\xc0\x01\x0b", 1.5)
-        self._ident_did = None
+        # v82: the MAC the way esptool actually reads it — two EFUSE words via
+        # READ_REG (op 0x0A), NOT opcode 0x0B (my 0x0B frame got a status-0 reply
+        # with a junk payload: the ROM does not answer MAC that way). ESP32-S3:
+        # EFUSE_RD_REG_BASE 0x60007030, MAC = BE(words[2], words[1])[2:8].
+        def _frame(op, payload):
+            return bytes([0xC0, 0x00, op]) + _struct.pack("<H", len(payload)) + \
+                   b"\x00" * 4 + payload + bytes([0xC0])
+
+        async def _read_reg(addr):
+            raw = await _wire(_frame(0x0A, _struct.pack("<I", addr)), b"\xc0\x01\x0a", 1.2)
+            if len(raw) < 13:
+                return None
+            size = raw[3] | (raw[4] << 8)
+            value = raw[5] | (raw[6] << 8) | (raw[7] << 16) | (raw[8] << 24)
+            data = raw[9:9 + size]
+            if value != 0 or len(data) < 4:
+                log.warning("RE-IDENTIFY read_reg %08x: status=%d size=%d raw=%s",
+                            addr, value, size, raw.hex()[:40])
+                return None
+            return int.from_bytes(data[:4], "little")
+
+        w1 = await _read_reg(0x60007034)
+        w2 = await _read_reg(0x60007038)
         mac = None
-        if resp2:
-            # SLIP-unescape, then strip frame header (C0 01 0B <len2> <chk4>) and tail
-            pay = resp2
-            if pay[:1] == b"\xc0":
-                pay = pay[1:]
-                if pay[-1:] == b"\xc0":
-                    pay = pay[:-1]
-            if pay[:3] == b"\x01\x0b":
-                pay = pay[1:]
-                pay = pay[6:]   # len2 + chk4
-            pay = pay.replace(b"\xdb\xdc", b"\xc0").replace(b"\xdb\xdd", b"\xdb")
-            # MAC layout (esptool v4.7 read_mac response): 2 pad, MAC 6, pad...
-            mac = ":".join("%02x" % b for b in pay[2:8])
-            log.info("RE-IDENTIFY probe: %s MAC=%s (raw: %s)", did, mac, pay.hex()[:48])
-        # entry paths in order, with retry ROUNDS: the reset-strapping through
-        # the browser sig path is FLAKY (FIELD 12:45: the same usb_reset that
-        # strapped download at 12:36 flaked into app mode at 12:45 — wrong boot
-        # 0x2b). Each round re-rolls the dice: the board reboots once per
-        # attempt until a round answers.
-        # v78: the esptool fallback is GONE — its pyserial open-dance re-bauded
-        # the tab to 9600 and raced the port recovery (FIELD 14:04: the sync left
-        # at 9600, the ROM at 115200 heard garbage, the close/open killed the
-        # reader). The in-daemon probe above is the whole mechanism now.
+        if w1 is not None and w2 is not None:
+            try:
+                mac = ":".join("%02x" % b for b in
+                               _struct.pack(">II", w2, w1)[2:8])
+            except Exception:
+                mac = None
+            log.info("RE-IDENTIFY efuse words: w1=%08x w2=%08x → MAC %s", w1, w2, mac)
+        self._ident_did = None
         if mac is None:
             try:
                 await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
