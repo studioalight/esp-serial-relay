@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.8"
+RELAY_VERSION = "v66.9"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -99,6 +99,24 @@ BROWSER_WAIT_S = float(_env("ESP_RELAY_BROWSER_WAIT", "30"))  # v24: FINALLY WIR
 # without any login friction). Port/bind changes persist to the file and
 # self-restart the LaunchAgent via `launchctl kickstart` — boot re-reads it.
 SETTINGS_PATH = os.path.expanduser("~/.openclaw/serial-relay-settings.json")
+MACS_PATH = os.path.expanduser("~/.openclaw/serial-relay-macs.json")   # v66.9: mac -> human label
+
+def mac_names():
+    """v66.9: the human-given names per board MAC. Re-identify consults this:
+    learning a MAC that the human named before restores that name automatically
+    (the 'I misidentified the room board' class — the label base stays stale
+    while the tail follows the MAC; the MAC is the board's true identity)."""
+    try:
+        d = json.load(open(MACS_PATH))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def mac_names_save(names):
+    try:
+        json.dump(names, open(MACS_PATH, "w"), indent=1)
+    except Exception as e:
+        log.warning("mac-names persist failed: %s", e)
 SETTINGS_KNOBS = ("rfcPort", "wsPort", "rfcBind", "browserWait")
 # v66.5: the token PERSISTS across daemon restarts — the per-boot re-randomized
 # token silently invalidated every page's token-guarded buttons (rename,
@@ -229,6 +247,10 @@ def registry_rename(did, label=None, rfc_port=None):
         return False
     if label is not None and str(label).strip():
         rec["label"] = str(label).strip()
+        if rec.get("mac") and str(label).strip():
+            names = mac_names()
+            names[rec["mac"].lower()] = str(label).strip()
+            mac_names_save(names)   # v66.9: bind the human's name to this board
     if rfc_port is not None:
         v = int(rfc_port)
         if not (1 <= v <= 65535):
@@ -2219,8 +2241,15 @@ class Relay:
             # labels follow the boards across the swap: the pressed row takes the
             # other board's label, the other row takes this one's
             a["label"], b["label"] = b.get("label"), a.get("label")
+            if (b.get("mac") or "").lower() and mac_names().get(b["mac"].lower()):
+                a["label"] = mac_names()[b["mac"].lower()] + " ·" + b["mac"][-5:].replace(":", "")
         else:
             rec["mac"] = mac
+            known = mac_names().get(mac)
+            if known:
+                import re as _re2
+                rec["label"] = _re2.sub(r" ·[0-9a-f]{4,6}$", "", known) + " ·" + mac[-5:].replace(":", "")
+                note_parts.append(f"known board — name '{known}' restored")
             label = rec.get("label") or did
             # v66.7: ONE MAC tail — strip any previous tail (board swaps on one
             # port re-learn their MAC each press; stacked tails mislabel)
