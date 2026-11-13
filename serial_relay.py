@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v74"
+RELAY_VERSION = "v75"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1869,10 +1869,15 @@ class Relay:
                         info = m.get("device")
                         prev_seat = m.get("prevDid")
                         wid = m.get("windowId")
-                        # v69.2: a window that already owns a seat keeps it —
-                        # even when another window bound the same base row. The
-                        # window→seat map survives restarts (registry row.windowId).
-                        if wid and wid in self.window_seats and self.window_seats[wid] in _load_devices():
+                        # v75: the TAB's own remembered seat is authoritative —
+                        # the daemon-side window map is only a fallback. The
+                        # registry row's windowId records the LAST BINDER, not the
+                        # owner, so trusting it re-merged the windows (FIELD
+                        # 13:58: window 7748 was sent to the base seat by a map
+                        # rebuilt from another window's bind).
+                        if (not prev_seat or prev_seat not in _load_devices()) \
+                                and wid and wid in self.window_seats \
+                                and self.window_seats[wid] in _load_devices():
                             prev_seat = self.window_seats[wid]
                         if isinstance(info, dict):
                             # v74: ONE SEAT PER WINDOW — a remembered seat that is
