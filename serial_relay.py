@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v78"
+RELAY_VERSION = "v78.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2445,6 +2445,15 @@ class Relay:
         SYNC = bytes([0xC0, 0x00, 0x08]) + _struct.pack("<HI", 36, 0) + \
                bytes([0x07, 0x07, 0x12, 0x20]) + b"\x55" * 32 + bytes([0xC0])
         resp = b""
+        # v78: the port must be at 115200 when the SYNC goes out — an earlier
+        # pyserial open-dance may have left the tab's UART at 9600 (FIELD 14:04:
+        # the sync bytes visibly left the tab and the ROM at 115200 heard only
+        # garbage, so the probe declared 'no entry' while the board sat waiting)
+        try:
+            await link.send(json.dumps({"t": "reopen", "baud": 115200}))
+        except Exception:
+            pass
+        await asyncio.sleep(1.2)
         for attempt in range(4):
             # the exact esptool 4.7 USBJTAGSerialReset sequence (the native USB
             # JTAG-Serial peripheral's own mapping): IO0 through DTR, EN through
