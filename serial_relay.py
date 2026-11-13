@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v79"
+RELAY_VERSION = "v80"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -903,12 +903,18 @@ async function recoverPort(){
           return true;
         }catch(e){ return false; }
       });
-      if(!match) continue;
+      if(!match){
+        if(attempt%5===0) log('recovery: getPorts returned '+ports.length+' port(s), no match yet','bad');
+        continue;
+      }
       try{ if(port && port!==match){ try{ await port.close(); }catch(e){} } }catch(e){}
       port=match;
       try{
         await port.open({baudRate:curBaud||115200, dataBits:8, stopBits:1, parity:'none'});
-      }catch(e){ continue; }   // not back yet — keep waiting
+      }catch(e){
+        if(attempt%5===0) log('recovery: open failed ('+e+') — will retry','bad');
+        continue;   // not back yet — keep waiting
+      }
       writer=port.writable.getWriter();
       log('port recovered after re-enumeration (attempt '+(attempt+1)+')','ok');
       PORT_REOPENING=false;
@@ -2472,7 +2478,16 @@ class Relay:
         except Exception:
             pass
         await asyncio.sleep(1.2)
-        for attempt in range(4):
+        # v80: SYNC FIRST. If the board is already in download mode (a manual
+        # BOOT+RESET tap on the Waveshare board, or a previous attempt left it
+        # parked), the ROM answers at once — and crucially NO reset is issued,
+        # so the native-USB port never detaches (FIELD 14:10: the reset pulse
+        # itself re-enumerates the 1.8 and Chrome loses the port).
+        resp = await _wire(SYNC, b"\xc0\x01\x08", 1.2)
+        if resp:
+            log.info("RE-IDENTIFY probe: %s — ROM sync answered WITHOUT a reset "
+                     "(board already in download mode)", did)
+        for attempt in range(4 if not resp else 0):
             # the exact esptool 4.7 USBJTAGSerialReset sequence (the native USB
             # JTAG-Serial peripheral's own mapping): IO0 through DTR, EN through
             # RTS, reset pulse with IO0 held → DOWNLOAD entry
