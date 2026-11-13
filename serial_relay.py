@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v75"
+RELAY_VERSION = "v76.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -956,6 +956,13 @@ let pumpEpoch=0;   // v61: single-flight — self-heal's resume call must retire
                    // surviving pre-drop pump instead of starting a twin; two pumps
                    // steal the reader lock from each other forever (FIELD 18:04:
                    // 'Releasing Default reader' flood, hundreds per minute)
+// v76: the reopen write-buffer state — declared HERE and once (they were used
+// without declarations after an earlier revert, so every write threw
+// ReferenceError inside the async handler: the tab wrote NOTHING to the port
+// from v69.1 on, which made the probe's SYNC vanish and the entry look failed
+let pendingWrites=[];
+let PORT_REOPENING=false;
+let REOPEN_STARTED_AT=0;
 let pumpLastErr='';
 async function pumpReads(){
   reading=true;
