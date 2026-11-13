@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v87"
+RELAY_VERSION = "v87.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -933,7 +933,7 @@ async function recoverPort(){
       return;
     }
     reading=false;
-    setStateEx('this board\'s USB port did not come back — click Connect and re-select it','down');
+    setStateEx('this board did not come back on USB — click Connect and re-select it','down');
     log('port lost: the board re-enumerated and Chrome will not reopen the old handle — click "Connect USB serial" to resume','bad');
   } finally { RECOVERING=false; }
 }
