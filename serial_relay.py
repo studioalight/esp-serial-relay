@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v72.1"
+RELAY_VERSION = "v73"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -771,11 +771,21 @@ async function wsMsgHandler(ev){
       }
     }
     else if(m.t==='sig'){
-      try{ await port.setSignals({
+      // v73: Web Serial's setSignals on the native-USB CDC races with the
+      // device's own reset cycles — the 'Failed to set control signals'
+      // NetworkError is transient; retry so the reset pulse lands whole
+      // (the probe's entry depends on every step of the sequence applying)
+      const applySig = async () => await port.setSignals({
         dataTerminalReady: m.dtr!==undefined ? !!m.dtr : undefined,
         requestToSend:     m.rts!==undefined ? !!m.rts : undefined,
-        break:             m.brk!==undefined ? !!m.brk : undefined }); }
-      catch(e){ log('setSignals: '+e,'bad'); }
+        break:             m.brk!==undefined ? !!m.brk : undefined });
+      try{
+        let done=false;
+        for(let i=0;i<4 && !done;i++){
+          try{ await applySig(); done=true; }
+          catch(e){ if(i<3) await new Promise(r=>setTimeout(r,60)); else log('setSignals failed after retries: '+e,'bad'); }
+        }
+      }catch(e){ log('setSignals: '+e,'bad'); }
     } else if(m.t==='reopen'){
       // live baud change: prefer port.update() — closing/opening pulses DTR/RTS on some
       // platforms, which reboots a chip parked mid-stub (the post-raise sync then finds
