@@ -49,7 +49,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v65"
+RELAY_VERSION = "v65.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1711,6 +1711,17 @@ class Relay:
                     m = json.loads(msg)
                     if m.get("t") == "hello":
                         log.info("BROWSER hello: baud=%s (port currently open)", m.get("baud"))
+                        # v65.1 FIELD 11:33: a fresh ESP32-S3-Touch-AMOLED-1.8 got
+                        # detected as the OLD Waveshare room node — every native-USB
+                        # ESP32-S3 reports vid303a:pid1001, and with no serialNumber
+                        # the registry identity silently merges distinct boards. Log
+                        # the reported identity at every hello so the collision is
+                        # visible (serial present? board swap? label?).
+                        _info = m.get("device")
+                        if isinstance(_info, dict):
+                            log.info("hello device info: vid=0x%x pid=0x%x serial=%r",
+                                     _info.get("vendorId") or 0, _info.get("productId") or 0,
+                                     _info.get("serialNumber"))
                         # v63: the tab's REAL uart rate (curBaud from v63 JS;
                         # older tabs report their open baud — best effort).
                         _bid = self.device_by_ws.get(connection) or "default"
