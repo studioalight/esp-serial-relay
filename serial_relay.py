@@ -804,14 +804,25 @@ async function wsMsgHandler(ev){
       if(!updated){
         reading=false;
         PORT_REOPENING=true;
-        try{ reader && await reader.cancel(); }catch(e){}
-        try{ reader && reader.releaseLock(); }catch(e){}
-        try{ writer && writer.releaseLock(); }catch(e){}
-        await port.close();
-        await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
-        curBaud=m.baud;
-        writer=port.writable.getWriter();
-        PORT_REOPENING=false;
+        REOPEN_STARTED_AT=Date.now();
+        try{
+          try{ reader && await reader.cancel(); }catch(e){}
+          try{ reader && reader.releaseLock(); }catch(e){}
+          try{ writer && writer.releaseLock(); }catch(e){}
+          await port.close();
+          await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
+          curBaud=m.baud;
+          writer=port.writable.getWriter();
+        }catch(e){
+          log('reopen failed: '+e,'bad');
+        }finally{
+          // v76: THE FLAG MUST ALWAYS COME DOWN — a failed port.open left
+          // PORT_REOPENING true forever, so every later byte was silently
+          // queued and never written (FIELD 14:01: the probe's SYNC never
+          // reached a board that WAS in download mode — the monitor showed
+          // 'waiting for download' while the log said 'no entry')
+          PORT_REOPENING=false;
+        }
         for(const pw of pendingWrites.splice(0)){ try{ await writer.write(pw); }catch(e){} }
         log('reopened at '+m.baud,'ok');
         try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'reopen', ok:true})); }catch(e){}
