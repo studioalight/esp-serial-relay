@@ -2647,7 +2647,7 @@ async def http_gate(connection, request):
         dlinks = getattr(r, "device_links", {}) if r else {}
         rows = []
         for rec in registry_list():
-            did = rec["id"]
+            did = rec.get("id") or ("vid%x-pid%x" % (rec.get("vendorId") or 0, rec.get("productId") or 0))
             # v64: a device bound to the DEFAULT slot (rfcPort == RFC_PORT) has
             # no per-did view — its state lives under the 'default' view
             st = dstate.get(did)
