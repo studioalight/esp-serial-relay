@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v83"
+RELAY_VERSION = "v84"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -890,7 +890,10 @@ async function recoverPort(){
   if(RECOVERING){ return; }
   RECOVERING=true;
   try{
-    for(let attempt=0; attempt<15 && reading===true; attempt++){
+    // v84: Chrome wedges the SerialPort object after 'device lost' — close()
+    // and open() both fail until a fresh USER gesture re-acquires it. Three
+    // quick attempts, then say so plainly instead of looping 15 times.
+    for(let attempt=0; attempt<3 && reading===true; attempt++){
       await new Promise(r=>setTimeout(r,400));
       let ports=[];
       try{ ports=await navigator.serial.getPorts(); }catch(e){ ports=[]; }
@@ -933,7 +936,9 @@ async function recoverPort(){
       pumpReads(); pollSignals();
       return;
     }
-    log('port recovery gave up after 15 attempts','bad');
+    reading=false;
+    setStateEx('USB port lost after the board reset — click Connect to resume','down');
+    log('port lost: the board re-enumerated and Chrome will not reopen the old handle — click "Connect USB serial" to resume','bad');
   } finally { RECOVERING=false; }
 }
 /* v41.2: page-local board reset — the tab owns the port, so the pulse
