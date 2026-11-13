@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v80"
+RELAY_VERSION = "v81"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -907,12 +907,23 @@ async function recoverPort(){
         if(attempt%5===0) log('recovery: getPorts returned '+ports.length+' port(s), no match yet','bad');
         continue;
       }
-      try{ if(port && port!==match){ try{ await port.close(); }catch(e){} } }catch(e){}
+      // v81: FULL TEARDOWN before open — getPorts returns the SAME SerialPort
+      // object after re-enumeration, so the old handle is still 'open'/locked
+      // and open() fails with 'Failed to open serial port' (FIELD 14:11, 15/15)
+      reading=false;
+      try{ reader && await reader.cancel(); }catch(e){}
+      try{ reader && reader.releaseLock(); }catch(e){}
+      reader=null;
+      try{ writer && await writer.close(); }catch(e){}
+      try{ writer && writer.releaseLock(); }catch(e){}
+      writer=null;
+      try{ await port.close(); }catch(e){}
       port=match;
+      await new Promise(r=>setTimeout(r,250));
       try{
         await port.open({baudRate:curBaud||115200, dataBits:8, stopBits:1, parity:'none'});
       }catch(e){
-        if(attempt%5===0) log('recovery: open failed ('+e+') — will retry','bad');
+        if(attempt%3===0) log('recovery: open failed ('+e+') — will retry','bad');
         continue;   // not back yet — keep waiting
       }
       writer=port.writable.getWriter();
@@ -2503,6 +2514,11 @@ class Relay:
             await _sig(False, False)
             await asyncio.sleep(0.4)
             resp = await _wire(SYNC, b"\xc0\x01\x08", 1.0)
+            for _extra in range(4 if not resp else 0):
+                await asyncio.sleep(0.4)
+                resp = await _wire(SYNC, b"\xc0\x01\x08", 0.8)
+                if resp:
+                    break
             if resp:
                 log.info("RE-IDENTIFY probe: %s (attempt %d) — ROM sync answer, reading MAC (attempt %d/4)",
                          did, attempt + 1, attempt + 1)
