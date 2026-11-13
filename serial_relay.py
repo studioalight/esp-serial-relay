@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v69"
+RELAY_VERSION = "v69.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -793,6 +793,7 @@ async function wsMsgHandler(ev){
       }
       if(!updated){
         reading=false;
+        PORT_REOPENING=true;
         try{ reader && await reader.cancel(); }catch(e){}
         try{ reader && reader.releaseLock(); }catch(e){}
         try{ writer && writer.releaseLock(); }catch(e){}
@@ -800,6 +801,8 @@ async function wsMsgHandler(ev){
         await port.open({baudRate:m.baud, dataBits:8, stopBits:1, parity:'none'});
         curBaud=m.baud;
         writer=port.writable.getWriter();
+        PORT_REOPENING=false;
+        for(const pw of pendingWrites.splice(0)){ try{ await writer.write(pw); }catch(e){} }
         log('reopened at '+m.baud,'ok');
         try{ ws && ws.send(JSON.stringify({t:'baud', baud:m.baud, path:'reopen', ok:true})); }catch(e){}
         pumpReads(); pollSignals();
