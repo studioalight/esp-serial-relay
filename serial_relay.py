@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.6"
+RELAY_VERSION = "v66.7"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2221,10 +2221,11 @@ class Relay:
         else:
             rec["mac"] = mac
             label = rec.get("label") or did
-            # first MAC for this slot: tag the label with the tail so the board
-            # is visually distinct from its vid/pid twins
-            if not rec.get("label").endswith(mac[-5:]):
-                rec["label"] = label + " ·" + mac[-5:].replace(":", "")
+            # v66.7: ONE MAC tail — strip any previous tail (board swaps on one
+            # port re-learn their MAC each press; stacked tails mislabel)
+            import re as _re
+            label_base = _re.sub(r" ·[0-9a-f]{4,6}$", "", label)
+            rec["label"] = label_base + " ·" + mac[-5:].replace(":", "")
             note_parts.append(f"learned and stored on '{rec.get('label')}'")
         _save_devices(d)
         note = "; ".join(note_parts)
