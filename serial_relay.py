@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v77"
+RELAY_VERSION = "v78"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2504,34 +2504,10 @@ class Relay:
         # strapped download at 12:36 flaked into app mode at 12:45 — wrong boot
         # 0x2b). Each round re-rolls the dice: the board reboots once per
         # attempt until a round answers.
-        for round_no in range(3):
-          for mode in ("usb_reset", "default_reset"):
-              try:
-                  proc = await asyncio.create_subprocess_exec(
-                      sys.executable, "-m", "esptool",
-                      "--port", f"rfc2217://127.0.0.1:{port}",
-                      "--chip", "esp32s3", "-b", "115200",
-                      "--before", mode, "--after", "hard_reset", "chip_id",
-                      stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-                  try:
-                      out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
-                  except asyncio.TimeoutError:
-                      proc.kill()
-                      out, _ = await proc.communicate()
-                  text = (out or b"").decode("utf-8", errors="replace")
-                  mmatch = _re.search(r"(MAC\s*[:=]\s*)([0-9a-fA-F:]{17})", text)
-                  if mmatch:
-                      mac = mmatch.group(2).lower()
-                      break
-                  last_probe_note = text.strip().splitlines()[-1] if text.strip() else "no output"
-                  log.info("RE-IDENTIFY: round %d %s connect failed (%.80s) — retrying",
-                           round_no + 1, mode, last_probe_note)
-              except Exception as e:
-                  log.warning("RE-IDENTIFY probe (%s) error: %s", mode, e)
-                  last_probe_note = ("probe error: %s" % e)
-        if mac is None:
-            self._last_probe_text = getattr(self, "_last_probe_text", "") or \
-                (text if text.strip() else "(no output)")
+        # v78: the esptool fallback is GONE — its pyserial open-dance re-bauded
+        # the tab to 9600 and raced the port recovery (FIELD 14:04: the sync left
+        # at 9600, the ROM at 115200 heard garbage, the close/open killed the
+        # reader). The in-daemon probe above is the whole mechanism now.
         if mac is None:
             try:
                 await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
