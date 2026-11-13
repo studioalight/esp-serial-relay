@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v68"
+RELAY_VERSION = "v69"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -482,6 +482,7 @@ PAGE = """<!doctype html>
 </div>
 <div class="box advanced">
  <div class="box-label" id="bridge-label" style="align-items:center">
+  <span id="window-id" class="hint" style="margin-left:.5rem">window …</span>
   <span id="bridge-device-text">Serial bridge — bridge-Mac side</span>
   <button class="mini" id="board-reset" title="local DTR/RTS reset pulse — browser-side timing" style="margin-left:.5rem">⏻ reset</button>
   <button class="mini" id="board-ident" title="press when this slot shows up as the wrong chip — esptool MAC probe through the port (board reboots once, ~20 s), the registry corrects itself (swaps ports/labels if the MAC belongs to another row)" style="margin-left:.3rem">⚖ re-identify</button>
@@ -551,6 +552,7 @@ PAGE = """<!doctype html>
 <script>
 const PAGE_V='%%RELAY_VERSION%%';
 const TOKEN='%%TOKEN%%';
+const WIN_ID=(()=>{try{let w=sessionStorage.getItem('relayWin');if(!w){w=Math.random().toString(16).slice(2,6).toUpperCase();sessionStorage.setItem('relayWin',w);}return w;}catch(e){return '????'}})();
 const $=id=>document.getElementById(id);
 const log=(m,cls)=>{const d=document.createElement('div');if(cls)d.className=cls;d.textContent=m;$('log').append(d);$('log').scrollTop=$('log').scrollHeight;};
 function setStateEx(t,cls){
@@ -747,6 +749,7 @@ async function wsMsgHandler(ev){
     if(m.t==='device-bound'){
       BOUND_DID=m.id;   // v66: the re-identify button's target
       try{ sessionStorage.setItem('relayDid', m.id); }catch(e){}   // v67: the seat persists reloads
+      const wi=$('window-id'); if(wi) wi.textContent='window '+WIN_ID;
       const dt=$('bridge-device-text');
       if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
       const pn=$('procedure-line');
@@ -858,7 +861,7 @@ let BOUND_DID=null;   // set when the device-bound frame arrives
 $('board-ident').onclick=()=>{
   if(!BOUND_DID){ log('re-identify needs a bound device — connect the port first (bridge line shows the device)','bad'); return; }
   if($('msg-busy')) return;
-  log('re-identifying '+BOUND_DID+' — probing the port via esptool, board reboots once (~20 s)…','');
+  log('window '+WIN_ID+': re-identifying '+BOUND_DID+' — probing the port via esptool, board reboots once (~20 s)…','');
   const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/console');
   ws.onopen=()=>ws.send(JSON.stringify({t:'dev-reidentify',token:TOKEN,pageV:PAGE_V,deviceId:BOUND_DID}));
   ws.onmessage=ev=>{ if(ev.data[0]!=='{')return; let m; try{m=JSON.parse(ev.data)}catch(e){return}
@@ -971,7 +974,7 @@ async function connect(){
       try{ const i=port.getInfo();
         devInfo={vendorId:i.usbVendorId, productId:i.usbProductId,
                  serialNumber:i.serialNumber||null}; }catch(e){}
-      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return sessionStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo})); setStateEx('link up','up'); };
+      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return sessionStorage.getItem('relayDid')}catch(e){return null}})(), windowId:WIN_ID, device:devInfo})); setStateEx('link up','up'); };
     ws.onmessage=wsMsgHandler;    ws.onclose=()=>{
       reading=false;
       const retry=()=>{
@@ -983,7 +986,7 @@ async function connect(){
                setStateEx('link up','up'); const baud=parseInt(($('baud')?$('baud').value:'115200'),10)||115200;
                let devInfo=null; try{ const ii=port.getInfo();
                  devInfo={vendorId:ii.usbVendorId, productId:ii.usbProductId, serialNumber:ii.serialNumber||null}; }catch(e){}
-               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return sessionStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo}));
+               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return sessionStorage.getItem('relayDid')}catch(e){return null}})(), windowId:WIN_ID, device:devInfo}));
                reading = true; pumpReads(); };
              ws.onmessage = wsMsgHandler;
              ws.onclose = ()=>{ setTimeout(retry, 1500); };
@@ -1829,6 +1832,10 @@ class Relay:
                         # version it came from; a mismatch means it survived one or
                         # more daemon upgrades via self-heal (the raise-kills-link
                         # class of bug: silent old JS, invisible to every fix).
+                        _wid = m.get("windowId")
+                        if _wid:
+                            _bid = self.device_by_ws.get(connection) or "default"
+                            log.info("WINDOW: %s hello from window %s", _bid, _wid)
                         pv = m.get("pageV")
                         if pv and pv != RELAY_VERSION:
                             log.warning("◆ TAB JS STALE: page %s vs daemon %s — reload the tab between flashes to update",
@@ -2318,6 +2325,11 @@ class Relay:
             import re as _re2
             row["label"] = _re2.sub(r" ·[0-9a-f]{4,6}$", "", mac_names()[mac]) + " ·" + mac[-5:].replace(":", "")
         self.device_links[matched] = connection
+        self.device_ports[matched] = port
+        try:
+            await self._ensure_device_server(matched, port)
+        except Exception as e:
+            log.warning("RE-IDENTIFY: listener ensure on :%d failed: %s", port, e)
         note_parts.append(f"this window re-bound to '{row.get('label')}'")
         if old_seat is not None:
             old_row = d.get(old_seat)
@@ -2409,19 +2421,31 @@ class Relay:
     # ---------- RFC2217 side (esptool clients) ----------
 
     async def _ensure_device_server(self, did, rfc_port):
-        """v26: one RFC2217 server per assigned device port (persisted)."""
+        """v26: one RFC2217 server per assigned device port (persisted).
+        v69: the port is the SLOT; the row claiming it can move (the port
+        follows the board via re-identify) — so the handler resolves the did
+        LIVE from the registry at every connection instead of baking it."""
         if rfc_port in self.device_servers:
             return
-        if rfc_port == RFC_PORT:
-            # the legacy default server on RFC_PORT is already listening —
-            # rebinding it kills the link (field 17:09: Errno 48). Default
-            # device traffic flows through rfc2217_client as before.
-            return
-        async def handler(reader, writer, _did=did, _port=rfc_port):
-            await self._device_rfc2217_client(_did, reader, writer)
+        async def handler(reader, writer, _port=rfc_port):
+            # resolve which row currently claims this port, at accept-time
+            try:
+                d = _load_devices()
+                for row_did, row in d.items():
+                    if int(row.get("rfcPort", 0)) == _port:
+                        await self._device_rfc2217_client(row_did, reader, writer)
+                        return
+            except Exception as e:
+                log.warning("port %d did-resolve failed: %s", _port, e)
+            log.info("port %d has no claiming device row — connection closed", _port)
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
         self.device_servers[rfc_port] = await asyncio.start_server(
             handler, RFC_BIND, rfc_port)
-        log.info("device %s listening on %s:%d", did, RFC_BIND, rfc_port)
+        log.info("device port %d listening (%s)", rfc_port, did)
 
     async def _device_rfc2217_client(self, did, reader, writer):
         """Per-device RFC2217 client: the session for this device's port."""
