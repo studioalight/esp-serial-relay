@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v72"
+RELAY_VERSION = "v72.1"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2342,17 +2342,15 @@ class Relay:
             # the exact esptool 4.7 USBJTAGSerialReset sequence (the native USB
             # JTAG-Serial peripheral's own mapping): IO0 through DTR, EN through
             # RTS, reset pulse with IO0 held → DOWNLOAD entry
+            # the verbatim esptool 4.7 USBJTAGSerialReset state sequence
             await _sig(False, False)
             await asyncio.sleep(0.1)
             await _sig(True, False)
+            await asyncio.sleep(0.1)
+            await _sig(True, True)
             await asyncio.sleep(0.1)
             await _sig(False, True)
-            await _sig(True, True)
             await asyncio.sleep(0.1)
-            await _sig(True, False)
-            await _sig(True, True)
-            await asyncio.sleep(0.1)
-            await _sig(False, False)
             await _sig(False, False)
             await asyncio.sleep(0.4)
             resp = await _wire(SYNC, b"\xc0\x01\x08", 1.0)
