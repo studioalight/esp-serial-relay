@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.3"
+RELAY_VERSION = "v66.4"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2157,7 +2157,7 @@ class Relay:
                     proc.kill()
                     out, _ = await proc.communicate()
                 text = (out or b"").decode("utf-8", errors="replace")
-                mmatch = _re.search(r"(MAC\\s*[:=]\\s*)([0-9a-fA-F:]{17})", text)
+                mmatch = _re.search(r"(MAC\s*[:=]\s*)([0-9a-fA-F:]{17})", text)
                 if mmatch:
                     mac = mmatch.group(2).lower()
                     break
@@ -2165,10 +2165,15 @@ class Relay:
                          mode, text.strip().splitlines()[-1] if text.strip() else "no output")
             except Exception as e:
                 log.warning("RE-IDENTIFY probe (%s) error: %s", mode, e)
+                text = ("probe error: %s" % e)
+        if mac is None:
+            self._last_probe_text = getattr(self, "_last_probe_text", "") or \
+                (text if text.strip() else "(no output)")
         if mac is None:
             try:
                 await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
-                    "note": "could not read the board's MAC — is a client holding the port? (the serial-watch agent yields only via bootout)"}))
+                    "note": "could not read the board's MAC — probe tail: " + " | ".join(
+                        (getattr(self, "_last_probe_text", "") or "").strip().splitlines()[-3:])}))
             except Exception:
                 pass
             return
