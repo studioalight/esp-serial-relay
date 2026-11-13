@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v84"
+RELAY_VERSION = "v85"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2554,14 +2554,15 @@ class Relay:
 
         async def _read_reg(addr):
             raw = await _wire(_frame(0x0A, _struct.pack("<I", addr)), b"\xc0\x01\x0a", 1.2)
-            if len(raw) < 13:
+            # v85: log EVERY reply in hex and parse tolerantly — a fixed-length
+            # check was rejecting short-but-valid frames (FIELD 14:16)
+            log.info("RE-IDENTIFY read_reg %08x: len=%d raw=%s", addr, len(raw), raw.hex()[:64])
+            if len(raw) < 9:
                 return None
             size = raw[3] | (raw[4] << 8)
             value = raw[5] | (raw[6] << 8) | (raw[7] << 16) | (raw[8] << 24)
             data = raw[9:9 + size]
             if value != 0 or len(data) < 4:
-                log.warning("RE-IDENTIFY read_reg %08x: status=%d size=%d raw=%s",
-                            addr, value, size, raw.hex()[:40])
                 return None
             return int.from_bytes(data[:4], "little")
 
