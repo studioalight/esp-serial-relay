@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.5"
+RELAY_VERSION = "v66.6"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -814,7 +814,7 @@ $('board-ident').onclick=()=>{
   if($('msg-busy')) return;
   log('re-identifying '+BOUND_DID+' — probing the port via esptool, board reboots once (~20 s)…','');
   const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/console');
-  ws.onopen=()=>ws.send(JSON.stringify({t:'dev-reidentify',token:TOKEN,deviceId:BOUND_DID}));
+  ws.onopen=()=>ws.send(JSON.stringify({t:'dev-reidentify',token:TOKEN,pageV:PAGE_V,deviceId:BOUND_DID}));
   ws.onmessage=ev=>{ if(ev.data[0]!=='{')return; let m; try{m=JSON.parse(ev.data)}catch(e){return}
     if(m.t==='reidentify-result'){
       log((m.ok?'✔ ':'✘ ')+m.note, m.ok?'ok':'bad');
@@ -2120,9 +2120,15 @@ class Relay:
         """
         import re as _re
         if m.get("token") != SETTINGS_TOKEN:
+            # v66.6 FIELD 12:09 — the token persists across restarts since v66.5,
+            # so a refusal ALWAYS means a stale page (loaded before the last
+            # restart). Say precisely which reload the user needs: this one.
+            pv = m.get("pageV") or "(old page)"
             try:
                 await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
-                    "note": "bad token — reload the devices page"}))
+                    "note": f"bad token — this page ({pv}) predates the last relay restart: "
+                            f"reload THIS page once and press again (the token now "
+                            f"persists, so that reload sticks)"}))
             except Exception:
                 pass
             return
