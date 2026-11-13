@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.7"
+RELAY_VERSION = "v66.8"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -506,6 +506,7 @@ PAGE = """<!doctype html>
 <footer>serial-relay %%RELAY_VERSION%% · gateway daemon · <b>Studio Alight</b> 2026 · <a href="/dashboard" style="color:var(--color-mute)">status dashboard</a></footer>
 <script>
 const PAGE_V='%%RELAY_VERSION%%';
+const TOKEN='%%TOKEN%%';
 const $=id=>document.getElementById(id);
 const log=(m,cls)=>{const d=document.createElement('div');if(cls)d.className=cls;d.textContent=m;$('log').append(d);$('log').scrollTop=$('log').scrollHeight;};
 function setStateEx(t,cls){
