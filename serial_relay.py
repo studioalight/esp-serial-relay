@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v73"
+RELAY_VERSION = "v74"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1875,7 +1875,27 @@ class Relay:
                         if wid and wid in self.window_seats and self.window_seats[wid] in _load_devices():
                             prev_seat = self.window_seats[wid]
                         if isinstance(info, dict):
+                            # v74: ONE SEAT PER WINDOW — a remembered seat that is
+                            # already held by ANOTHER LIVE window cannot be shared
+                            # (both windows would print the same rfc2217 port and
+                            # only the last-bound tab would receive its traffic:
+                            # FIELD 13:55 both bridge lines said :4007). Mint this
+                            # window its own seat instead.
+                            seat_conflict = False
                             if prev_seat and prev_seat in _load_devices():
+                                holder = self.device_links.get(prev_seat)
+                                seat_conflict = (holder is not None
+                                                 and holder is not connection
+                                                 and getattr(holder, "close_code", None) is None)
+                            if seat_conflict and isinstance(info, dict):
+                                d0 = _load_devices()
+                                vid = info.get("vendorId"); pid = info.get("productId")
+                                base0 = f"vid{vid:04x}-pid{pid:04x}" if vid and pid else "anon"
+                                did, rec = registry_new_row(d0, base0, info)
+                                log.info("SEAT SPLIT: window %s got its own seat %s @:%d "
+                                         "(the remembered seat %s is held by another window)",
+                                         wid, did, rec["rfcPort"], prev_seat)
+                            elif prev_seat and prev_seat in _load_devices():
                                 did, rec = registry_upsert(info, prev_did=prev_seat)
                             elif prev_seat:
                                 # v67.1: the tab REMEMBERS a seat that is gone from
