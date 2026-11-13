@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v67"
+RELAY_VERSION = "v67.2"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -746,7 +746,7 @@ async function wsMsgHandler(ev){
     }
     if(m.t==='device-bound'){
       BOUND_DID=m.id;   // v66: the re-identify button's target
-      try{ localStorage.setItem('relayDid', m.id); }catch(e){}   // v67: the seat persists reloads
+      try{ sessionStorage.setItem('relayDid', m.id); }catch(e){}   // v67: the seat persists reloads
       const dt=$('bridge-device-text');
       if(dt) dt.textContent='Serial bridge — '+(m.label||m.id)+' · device rfc2217 :'+m.rfcPort;
       const pn=$('procedure-line');
@@ -971,7 +971,7 @@ async function connect(){
       try{ const i=port.getInfo();
         devInfo={vendorId:i.usbVendorId, productId:i.usbProductId,
                  serialNumber:i.serialNumber||null}; }catch(e){}
-      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return localStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo})); setStateEx('link up','up'); };
+      ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return sessionStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo})); setStateEx('link up','up'); };
     ws.onmessage=wsMsgHandler;    ws.onclose=()=>{
       reading=false;
       const retry=()=>{
@@ -983,7 +983,7 @@ async function connect(){
                setStateEx('link up','up'); const baud=parseInt(($('baud')?$('baud').value:'115200'),10)||115200;
                let devInfo=null; try{ const ii=port.getInfo();
                  devInfo={vendorId:ii.usbVendorId, productId:ii.usbProductId, serialNumber:ii.serialNumber||null}; }catch(e){}
-               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return localStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo}));
+               ws.send(JSON.stringify({t:'hello',baud, pageV:PAGE_V, curBaud, prevDid:(()=>{try{return sessionStorage.getItem('relayDid')}catch(e){return null}})(), device:devInfo}));
                reading = true; pumpReads(); };
              ws.onmessage = wsMsgHandler;
              ws.onclose = ()=>{ setTimeout(retry, 1500); };
