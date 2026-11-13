@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v86.1"
+RELAY_VERSION = "v87"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -897,15 +897,11 @@ async function recoverPort(){
       await new Promise(r=>setTimeout(r,400));
       let ports=[];
       try{ ports=await navigator.serial.getPorts(); }catch(e){ ports=[]; }
-      const match=ports.find(p=>{
-        try{
-          const i=p.getInfo();
-          if(!PORT_INFO) return true;
-          if(PORT_INFO.usbVendorId && i.usbVendorId && i.usbVendorId!==PORT_INFO.usbVendorId) return false;
-          if(PORT_INFO.usbProductId && i.usbProductId && i.usbProductId!==PORT_INFO.usbProductId) return false;
-          return true;
-        }catch(e){ return false; }
-      });
+      // v87: match the SAME port object only. Both AMOLED boards report
+      // vid303a:pid1001, so a vid/pid match can grab the OTHER board's line
+      // (FIELD 14:26: the room window suddenly streamed the 1.8's serial data).
+      // If our own port does not come back, say so — never take a twin's.
+      const match=ports.find(p=>p===port);
       if(!match){
         if(attempt%5===0) log('recovery: getPorts returned '+ports.length+' port(s), no match yet','bad');
         continue;
@@ -937,7 +933,7 @@ async function recoverPort(){
       return;
     }
     reading=false;
-    setStateEx('USB port lost after the board reset — click Connect to resume','down');
+    setStateEx('this board\'s USB port did not come back — click Connect and re-select it','down');
     log('port lost: the board re-enumerated and Chrome will not reopen the old handle — click "Connect USB serial" to resume','bad');
   } finally { RECOVERING=false; }
 }
