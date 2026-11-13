@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v85"
+RELAY_VERSION = "v86"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -1685,6 +1685,16 @@ class WebSerialBridge:
         # the read pump). Field flow 2026-10-15: 115200 -> whatever esptool
         # sets (--baud on flash).
         v = int(v)
+        # v86: pyserial opens every RFC2217 client at its 9600 default before
+        # applying the requested rate; that dance closed/reopened the tab's port
+        # and detached native-USB boards (every probe died on 'device lost').
+        # A sub-19200 request while the tab already runs >=19200 is that artifact:
+        # ignore it (esptool's real raise still goes through the setter).
+        if v < 19200 and self._baud >= 19200:
+            if not getattr(self, "_dance_warned", False):
+                self._dance_warned = True
+                log.info("rfc2217: ignoring pyserial's %d open-dance (tab at %d)", v, self._baud)
+            return
         # v63: detect a stale tab uart — a fresh PM assumes the open rate, but
         # the physical tab may sit at the rate a previous raise left it at.
         # FIELD 19:30: that desync deadlocked every post-raise client (sync at
@@ -2544,38 +2554,33 @@ class Relay:
                 pass
             self._ident_did = None
             return
-        # v82: the MAC the way esptool actually reads it — two EFUSE words via
-        # READ_REG (op 0x0A), NOT opcode 0x0B (my 0x0B frame got a status-0 reply
-        # with a junk payload: the ROM does not answer MAC that way). ESP32-S3:
-        # EFUSE_RD_REG_BASE 0x60007030, MAC = BE(words[2], words[1])[2:8].
-        def _frame(op, payload):
-            return bytes([0xC0, 0x00, op]) + _struct.pack("<H", len(payload)) + \
-                   b"\x00" * 4 + payload + bytes([0xC0])
-
-        async def _read_reg(addr):
-            raw = await _wire(_frame(0x0A, _struct.pack("<I", addr)), b"\xc0\x01\x0a", 1.2)
-            # v85: log EVERY reply in hex and parse tolerantly — a fixed-length
-            # check was rejecting short-but-valid frames (FIELD 14:16)
-            log.info("RE-IDENTIFY read_reg %08x: len=%d raw=%s", addr, len(raw), raw.hex()[:64])
-            if len(raw) < 9:
-                return None
-            size = raw[3] | (raw[4] << 8)
-            value = raw[5] | (raw[6] << 8) | (raw[7] << 16) | (raw[8] << 24)
-            data = raw[9:9 + size]
-            if value != 0 or len(data) < 4:
-                return None
-            return int.from_bytes(data[:4], "little")
-
-        w1 = await _read_reg(0x60007034)
-        w2 = await _read_reg(0x60007038)
+        # v86: the MAC comes from esptool's chip_id — the ROM has no read_mac;
+        # esptool uploads its stub and reads the EFUSE through it (the raw
+        # READ_REG replies were status/garbage: FIELD 14:22). The 9600 open-dance
+        # is ignored by the relay, so esptool's connect no longer bounces the tab.
         mac = None
-        if w1 is not None and w2 is not None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "esptool",
+                "--port", f"rfc2217://127.0.0.1:{port}",
+                "--chip", "esp32s3", "-b", "115200",
+                "--before", "no_reset", "--after", "no_reset", "chip_id",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             try:
-                mac = ":".join("%02x" % b for b in
-                               _struct.pack(">II", w2, w1)[2:8])
-            except Exception:
-                mac = None
-            log.info("RE-IDENTIFY efuse words: w1=%08x w2=%08x → MAC %s", w1, w2, mac)
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+            except asyncio.TimeoutError:
+                proc.kill()
+                out, _ = await proc.communicate()
+            text = (out or b"").decode("utf-8", errors="replace")
+            mm = _re.search(r"MAC\s*:\s*([0-9a-fA-F:]{17})", text)
+            if mm:
+                mac = mm.group(1).lower()
+            else:
+                log.warning("RE-IDENTIFY chip_id: no MAC in output: %s",
+                            " | ".join(text.strip().splitlines()[-3:]))
+        except Exception as e:
+            log.warning("RE-IDENTIFY chip_id error: %s", e)
+        log.info("RE-IDENTIFY chip_id result for %s: MAC=%s", did, mac)
         self._ident_did = None
         if mac is None:
             try:
