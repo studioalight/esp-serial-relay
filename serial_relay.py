@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v70"
+RELAY_VERSION = "v71"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2042,8 +2042,18 @@ class Relay:
 
     # ---------- status dashboard / live mirror ----------
 
+    def _ident_rx_feed(self, did, data):
+        """v71: the re-identify probe's private rx capture (the wire answer)."""
+        try:
+            if getattr(self, "_ident_did", None) == did and hasattr(self, "_ident_buf"):
+                self._ident_buf += data
+        except Exception:
+            pass
+
     def monitor_tap(self, data, direction, did=None):
         """Every byte that crosses the relay, either way, feeds the mirror."""
+        if direction == "rx":
+            self._ident_rx_feed(did, data)
         if did and did != "default":
             view = self.device_state.get(did)
             if view is None:
@@ -2282,6 +2292,108 @@ class Relay:
         log.info("RE-IDENTIFY: probing device %s on :%d (button press, window %s)", did, port, _wid)
         mac = None
         last_probe_note = ""
+        # v71: THE ROM-LEVEL PROBE — no esptool, no pyserial, no open-dance
+        # races. The device tap captures the wire answer from THIS window's
+        # board directly; the entry is the usb-jtag reset dance through sig
+        # frames, then SYNC + READ_MAC in raw SLIP.
+        try:
+            self._ident_did = did
+            self._ident_buf = bytearray()
+            link = self.device_links.get(did)
+        except Exception:
+            link = None
+        if link is None:
+            try:
+                await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
+                    "note": "no browser link for this device — connect the tab first"}))
+            except Exception:
+                pass
+            return
+        import struct as _struct
+
+        async def _sig(dtr, rts):
+            try:
+                await link.send(json.dumps({"t": "sig", "dtr": dtr, "rts": rts}))
+            except Exception:
+                pass
+
+        async def _wire(frame, expect, wait_s):
+            self._ident_buf.clear()
+            try:
+                await link.send(frame)
+            except Exception as e:
+                return b""
+            end = time.monotonic() + wait_s
+            while time.monotonic() < end:
+                idx = self._ident_buf.find(expect)
+                if idx >= 0:
+                    # accumulate a beat more (the payload may straddle chunks)
+                    await asyncio.sleep(0.15)
+                    resp = bytes(self._ident_buf[idx:])
+                    self._ident_buf.clear()
+                    return resp
+                await asyncio.sleep(0.05)
+            return b""
+
+        SYNC = bytes([0xC0, 0x00, 0x08]) + _struct.pack("<HI", 36, 0) + \
+               bytes([0x07, 0x07, 0x12, 0x20]) + b"\x55" * 32 + bytes([0xC0])
+        resp = b""
+        for attempt in range(4):
+            # usb-jtag reset dance via sig pulses (the pulse pattern that the
+            # wire monitor showed landing: rst:0x15, download entry)
+            await _sig(False, False)
+            await asyncio.sleep(0.12)
+            await _sig(True, True)
+            await asyncio.sleep(0.06)
+            await _sig(False, True)
+            await asyncio.sleep(0.10)
+            await _sig(True, False)
+            await asyncio.sleep(0.05)
+            await _sig(False, False)
+            await asyncio.sleep(0.45)
+            await _sig(True, False)
+            await asyncio.sleep(0.12)
+            await _sig(False, False)
+            await asyncio.sleep(0.45)
+            resp = await _wire(SYNC, b"\xc0\x01\x08", 1.0)
+            if resp:
+                log.info("RE-IDENTIFY probe: %s (attempt %d) — ROM sync answer, reading MAC",
+                         did, attempt + 1)
+                break
+        if not resp:
+            self._ident_did = None
+            try:
+                await connection.send(json.dumps({"t": "reidentify-result", "ok": False,
+                    "note": "the board did not enter download mode after 4 reset attempts",
+                    "winId": "7748"}))
+            except Exception:
+                pass
+            self._ident_did = None
+            return
+        # READ_MAC: op 0x0B, args 6x0 — the response's first 6 data bytes are the MAC
+        READMAC = bytes([0xC0, 0x00, 0x0B]) + _struct.pack("<HI", 6, 0) + b"\x00" * 6 + bytes([0xC0])
+        self._ident_buf.clear()
+        try:
+            await link.send(READMAC)
+        except Exception as e:
+            log.warning("RE-IDENTIFY readmac send failed: %s", e)
+        resp2 = await _wire(b"\xc0\x01\x0b", b"\xc0\x01\x0b", 1.5)
+        self._ident_did = None
+        mac = None
+        if resp2:
+            # SLIP-unescape, then strip frame header (C0 01 0B <len2> <chk4>) and tail
+            pay = resp2
+            if pay[:1] == b"\xc0":
+                pay = pay[1:]
+                if pay[-1:] == b"\xc0":
+                    pay = pay[:-1]
+            if pay[:3] == b"\x01\x0b":
+                pay = pay[1:]
+                pay = pay[6:]   # len2 + chk4
+            pay = pay.replace(b"\xdb\xdc", b"\xc0").replace(b"\xdb\xdd", b"\xdb")
+            # MAC layout (esptool v4.7 read_mac response): 2 pad, MAC 6, pad...
+            mac = ":".join("%02x" % b for b in pay[2:8])
+            log.info("RE-IDENTIFY probe: %s MAC=%s (raw: %s)", did, mac, pay.hex()[:48])
         # entry paths in order, with retry ROUNDS: the reset-strapping through
         # the browser sig path is FLAKY (FIELD 12:45: the same usb_reset that
         # strapped download at 12:36 flaked into app mode at 12:45 — wrong boot
