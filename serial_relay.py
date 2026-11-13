@@ -1846,6 +1846,24 @@ class Relay:
                         if isinstance(info, dict):
                             if prev_seat and prev_seat in _load_devices():
                                 did, rec = registry_upsert(info, prev_did=prev_seat)
+                            elif prev_seat:
+                                # v67.1: the tab REMEMBERS a seat that is gone from
+                                # the registry (a cleanup/rebuild removed it). Re-mint
+                                # THE SAME seat id for this tab — never fall back to
+                                # the base row (both tabs then fight over one seat
+                                # — FIELD 12:47: both windows said :4007).
+                                d = _load_devices()
+                                _dnew = prev_seat
+                                now = time.strftime("%Y-%m-%dT%H:%M:%S")
+                                d[_dnew] = {"id": _dnew,
+                                    "rfcPort": _safe_next_port(d),
+                                    "firstSeen": now, "lastSeen": now,
+                                    "label": info.get("label") or _dnew,
+                                    "vendorId": info.get("vendorId"), "productId": info.get("productId"),
+                                    "serialNumber": (info.get("serialNumber") or None)}
+                                _save_devices(d)
+                                did, rec = _dnew, d[_dnew]
+                                log.info("SEAT RE-MINTED: %s @:%d (the tab remembered a removed seat)", did, rec["rfcPort"])
                             else:
                                 did, rec = registry_upsert(info)
                                 bound_other = self.device_links.get(did)
@@ -2223,31 +2241,37 @@ class Relay:
             self._release_slot(prev_pm, did)
         log.info("RE-IDENTIFY: probing device %s on :%d (button press)", did, port)
         mac = None
-        # entry paths, in order: native USB (usb_reset), then the default
-        # reset — for kicker boards the v62 auto-kick covers the entry
-        for mode in ("usb_reset", "default_reset"):
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "esptool",
-                    "--port", f"rfc2217://127.0.0.1:{port}",
-                    "--chip", "esp32s3", "-b", "115200",
-                    "--before", mode, "--after", "hard_reset", "chip_id",
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-                try:
-                    out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    out, _ = await proc.communicate()
-                text = (out or b"").decode("utf-8", errors="replace")
-                mmatch = _re.search(r"(MAC\s*[:=]\s*)([0-9a-fA-F:]{17})", text)
-                if mmatch:
-                    mac = mmatch.group(2).lower()
-                    break
-                log.info("RE-IDENTIFY: %s connect failed (%.80s) — next entry mode",
-                         mode, text.strip().splitlines()[-1] if text.strip() else "no output")
-            except Exception as e:
-                log.warning("RE-IDENTIFY probe (%s) error: %s", mode, e)
-                text = ("probe error: %s" % e)
+        last_probe_note = ""
+        # entry paths in order, with retry ROUNDS: the reset-strapping through
+        # the browser sig path is FLAKY (FIELD 12:45: the same usb_reset that
+        # strapped download at 12:36 flaked into app mode at 12:45 — wrong boot
+        # 0x2b). Each round re-rolls the dice: the board reboots once per
+        # attempt until a round answers.
+        for round_no in range(3):
+          for mode in ("usb_reset", "default_reset"):
+              try:
+                  proc = await asyncio.create_subprocess_exec(
+                      sys.executable, "-m", "esptool",
+                      "--port", f"rfc2217://127.0.0.1:{port}",
+                      "--chip", "esp32s3", "-b", "115200",
+                      "--before", mode, "--after", "hard_reset", "chip_id",
+                      stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                  try:
+                      out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+                  except asyncio.TimeoutError:
+                      proc.kill()
+                      out, _ = await proc.communicate()
+                  text = (out or b"").decode("utf-8", errors="replace")
+                  mmatch = _re.search(r"(MAC\s*[:=]\s*)([0-9a-fA-F:]{17})", text)
+                  if mmatch:
+                      mac = mmatch.group(2).lower()
+                      break
+                  last_probe_note = text.strip().splitlines()[-1] if text.strip() else "no output"
+                  log.info("RE-IDENTIFY: round %d %s connect failed (%.80s) — retrying",
+                           round_no + 1, mode, last_probe_note)
+              except Exception as e:
+                  log.warning("RE-IDENTIFY probe (%s) error: %s", mode, e)
+                  last_probe_note = ("probe error: %s" % e)
         if mac is None:
             self._last_probe_text = getattr(self, "_last_probe_text", "") or \
                 (text if text.strip() else "(no output)")
