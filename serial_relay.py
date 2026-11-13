@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v87.1"
+RELAY_VERSION = "v88"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -897,11 +897,46 @@ async function recoverPort(){
       await new Promise(r=>setTimeout(r,400));
       let ports=[];
       try{ ports=await navigator.serial.getPorts(); }catch(e){ ports=[]; }
-      // v87: match the SAME port object only. Both AMOLED boards report
-      // vid303a:pid1001, so a vid/pid match can grab the OTHER board's line
-      // (FIELD 14:26: the room window suddenly streamed the 1.8's serial data).
-      // If our own port does not come back, say so — never take a twin's.
-      const match=ports.find(p=>p===port);
+      // v88: identify the board by PINGING it. Both AMOLED boards are
+      // vid303a:pid1001 with no serial, and after re-enumeration the old port
+      // object is gone (getPorts returns 2 fresh objects) — but only the board
+      // we just reset into download mode answers the ROM SYNC. So: try each
+      // candidate, send the sync frame, adopt the one that answers C0 01 08.
+      const ROM_SYNC=new Uint8Array([0xC0,0x00,0x08,0x24,0x00,0x00,0x00,0x00,0x00,
+                                     0x07,0x07,0x12,0x20].concat(Array(32).fill(0x55)).concat([0xC0]));
+      let match=null;
+      for(const cand of ports){
+        try{
+          if(cand===port){ match=cand; break; }
+          await cand.open({baudRate:curBaud||115200, dataBits:8, stopBits:1, parity:'none'});
+          const w=cand.writable.getWriter();
+          await w.write(ROM_SYNC);
+          try{ await w.close(); }catch(e){}
+          const r=cand.readable.getReader();
+          let seen=new Uint8Array(0);
+          const until=Date.now()+600;
+          while(Date.now()<until && seen.length<64){
+            const {value,done}=await Promise.race([
+              r.read(),
+              new Promise(res=>setTimeout(()=>res({value:null,done:true}), 200))
+            ]);
+            if(done || !value) break;
+            const nv=new Uint8Array(seen.length+value.length);
+            nv.set(seen); nv.set(value,seen.length); seen=nv;
+            if(seen.length>=3){
+              for(let i=0;i+2<seen.length;i++){
+                if(seen[i]===0xC0 && seen[i+1]===0x01 && seen[i+2]===0x08){ match=cand; break; }
+              }
+            }
+            if(match) break;
+          }
+          try{ r.releaseLock(); }catch(e){}
+          if(match){ log('recovery: adopted '+':'.join(cand.getInfo?[]:[])+'the port that answered the ROM sync','ok'); break; }
+          try{ await cand.close(); }catch(e){}
+        }catch(e){
+          try{ await cand.close(); }catch(e2){}
+        }
+      }
       if(!match){
         if(attempt%5===0) log('recovery: getPorts returned '+ports.length+' port(s), no match yet','bad');
         continue;
