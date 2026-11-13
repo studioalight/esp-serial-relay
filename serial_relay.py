@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v66.1"
+RELAY_VERSION = "v66.2"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2120,6 +2120,25 @@ class Relay:
                 pass
             return
         port = int(rec.get("rfcPort", 0))
+        # v66.2: explicit preemption — the button is a user-pressed maintenance
+        # op; close the current slot holder (e.g. the serial-watch agent) so the
+        # probe can take the port without depending on reaper timing
+        prev = self.device_pms.get(did)
+        if prev is not None:
+            prev_pm, prev_writer = prev
+            log.info("RE-IDENTIFY: preempting the slot holder on :%d", port)
+            try:
+                prev_writer.close()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(prev_writer.wait_closed(), timeout=2)
+            except Exception:
+                try:
+                    prev_writer.transport.abort()
+                except Exception:
+                    pass
+            self._release_slot(prev_pm, did)
         log.info("RE-IDENTIFY: probing device %s on :%d (button press)", did, port)
         mac = None
         # entry paths, in order: native USB (usb_reset), then the default
@@ -2377,13 +2396,16 @@ class Relay:
                 data = await reader.read(4096)
                 if not data:
                     break
-                # v64.2: the slot's client-liveness signal (the preemption reaper's clock)
-                self._slot_rx[did] = time.monotonic()
                 batch = bytearray()
                 for b in pm.filter(data):
                     batch += b
                 if batch:
                     started = True
+                    # v66.2: the preemption reaper's clock counts PAYLOAD bytes
+                    # only — RFC2217 control bytes (open-dance SET_BAUDRATE from
+                    # a silent serial-watch reader) would otherwise keep a dead
+                    # slot reaper-fresh forever, blocking every real client
+                    self._slot_rx[did] = time.monotonic()
                     # rung 22: tap the FILTERED payload (telnet/RFC2217
                     # controls stripped) as tx — this is the only path
                     # esptool's ROM-protocol frames take, and the phase
