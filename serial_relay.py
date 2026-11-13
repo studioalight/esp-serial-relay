@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("serial-relay")
 START_TS = time.time()
-RELAY_VERSION = "v69.2"
+RELAY_VERSION = "v70"
 
 # ---- favicons (v23): the mascot holding a DB9 — baked at import ----
 import base64 as _b64
@@ -2366,12 +2366,26 @@ class Relay:
             if omac and mac_names().get(omac):
                 orow["label"] = _re2.sub(r" ·[0-9a-f]{4,6}$", "", mac_names()[omac]) + " ·" + omac[-5:].replace(":", "")
         self.device_links[matched] = connection
+        # v70: the ws->did map MUST follow (routing: rx/tx keyed by it) — its
+        # absence left the window's BOUND_DID on the old seat, so the next
+        # press probed the wrong port (FIELD 12:44 "still says 4007")
+        self.device_by_ws[connection] = matched
         self.device_ports[matched] = port
         try:
             await self._ensure_device_server(matched, port)
         except Exception as e:
             log.warning("RE-IDENTIFY: listener ensure on :%d failed: %s", port, e)
         note_parts.append(f"this window re-bound to '{row.get('label')}'")
+        # the pressing window's bridge line + seat follow the matched row
+        try:
+            await connection.send(json.dumps({
+                "t": "device-bound", "id": matched,
+                "label": row.get("label") or matched,
+                "rfcPort": row.get("rfcPort"),
+                "rfcBind": RFC_BIND,
+                "tailnetIp": tailscale_ipv4() or None}))
+        except Exception:
+            pass
         if old_seat is not None:
             old_row = d.get(old_seat)
             if old_row is not None:
@@ -2388,7 +2402,7 @@ class Relay:
             pass
         try:
             await connection.send(json.dumps({"t": "reidentify-result", "ok": True,
-                "note": note, "mac": mac, "label": rec.get("label")}))
+                "note": note, "mac": mac, "label": row.get("label") or matched}))
         except Exception:
             pass
 
